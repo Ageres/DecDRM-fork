@@ -740,3 +740,26 @@ fn hackrf_if_check_uses_the_real_spectrum() {
     assert!(p.iter().any(|x| x.contains("outside +-1000 kHz")), "{p:?}");
     assert!(check(5, 985_000.0).is_ok());
 }
+
+/// The whole channel, not only the nominal frequency, has to stay inside the radio's
+/// range: a 10 kHz channel on 1 MHz reaches 4.8 kHz below the floor.
+#[cfg(feature = "hackrf")]
+#[test]
+fn hackrf_channel_stays_inside_the_radios_range() {
+    let check = |frequency_hz: u64| {
+        let mut cfg = parse(&base());
+        cfg.output.file = None;
+        cfg.output.format = decdrm_station::SignalFormat::Iq;
+        cfg.output.hackrf = Some(decdrm_station::HackrfSettings {
+            frequency_hz,
+            ..Default::default()
+        });
+        cfg.validate().map(|_| ()).map_err(|e| e.problems().to_vec())
+    };
+    let p = check(1_000_000).unwrap_err();
+    assert!(
+        p.iter().any(|x| x.contains("outside the HackRF's 1 MHz")),
+        "the lower carriers are below the floor: {p:?}"
+    );
+    assert!(check(1_010_000).is_ok(), "1.01 MHz clears it");
+}

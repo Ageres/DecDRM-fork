@@ -58,7 +58,7 @@
 //! or 4:1 stereo) and then creates the encoder once, for the xHE-AAC Static Config that
 //! SDC type 9 carries.
 
-use crate::config::{AppKind, Codec, Part, SbrRatio, SignalFormat, StationConfig};
+use crate::config::{AppKind, Codec, HackrfSettings, Part, SbrRatio, SignalFormat, StationConfig};
 use crate::error::{ConfigProblems, Result, StationError};
 use crate::sdc;
 use decdrm_core::cellmap::CellMap;
@@ -577,8 +577,27 @@ fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Prob
         if out.iq_swap {
             p.push("output: hackrf needs iq_swap = false (swapping I/Q mirrors the spectrum)");
         }
-        if !(1_000_000..=6_000_000_000).contains(&h.frequency_hz) {
+        // The signal's span from its lowest to its highest carrier: the 18 and 20 kHz
+        // occupancies reach about 14.6 kHz above the DC carrier and only 4.6 kHz below
+        // it, so half the nominal bandwidth is not the room they need.
+        let (band_lo, band_hi) =
+            layout.map_or((-10_000.0, 10_000.0), decdrm_core::tx::output::carrier_span_hz);
+        // Half a carrier of guard for the outermost carriers' main lobes.
+        let margin = layout.map_or(0.0, |l| l.mode.carrier_spacing() / 2.0);
+        if !HackrfSettings::RANGE_HZ.contains(&h.frequency_hz) {
             p.push(format!("hackrf: frequency_hz {} is outside the HackRF's 1 MHz–6 GHz range", h.frequency_hz));
+        } else {
+            // The whole signal, not just the nominal frequency, has to stay inside the
+            // range: a 20 kHz channel on 1 MHz reaches 4.6 kHz below the floor.
+            let floor = *HackrfSettings::RANGE_HZ.start() as f64;
+            let ceiling = *HackrfSettings::RANGE_HZ.end() as f64;
+            let lowest = h.frequency_hz as f64 + band_lo;
+            let highest = h.frequency_hz as f64 + band_hi;
+            if lowest < floor || highest > ceiling {
+                p.push(format!(
+                    "hackrf: the channel reaches {lowest:.0}..{highest:.0} Hz, outside the HackRF's 1 MHz–6 GHz range (the signal extends above and below frequency_hz)"
+                ));
+            }
         }
         // The oscillator sits at `frequency - if_offset`, so a negative offset moves
         // it above the channel: check both ends of the radio's range.
@@ -604,23 +623,18 @@ fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Prob
                 h.if_offset_hz
             ));
         }
-        // The whole signal, from its lowest to its highest carrier, has to fit into
-        // the radio's passband. The 18 and 20 kHz occupancies reach about 14.6 kHz
-        // above the DC carrier and only 4.6 kHz below it, so half the nominal
-        // bandwidth is not the room they need.
-        let (lo, hi) =
-            layout.map_or((-10_000.0, 10_000.0), decdrm_core::tx::output::carrier_span_hz);
-        // Half a carrier of guard for the outermost carriers' main lobes.
-        let margin = layout.map_or(0.0, |l| l.mode.carrier_spacing() / 2.0);
+        // The channel also has to fit into the radio's passband, centred on the IF.
         let half = f64::from(h.sample_rate_hz) / 2.0;
-        if h.if_offset_hz + lo - margin < -half || h.if_offset_hz + hi + margin > half {
+        if h.if_offset_hz + band_lo - margin < -half
+            || h.if_offset_hz + band_hi + margin > half
+        {
             p.push(format!(
                 "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of sample_rate_hz {}",
-                lo / 1e3,
-                hi / 1e3,
+                band_lo / 1e3,
+                band_hi / 1e3,
                 h.if_offset_hz,
-                (h.if_offset_hz + lo - margin) / 1e3,
-                (h.if_offset_hz + hi + margin) / 1e3,
+                (h.if_offset_hz + band_lo - margin) / 1e3,
+                (h.if_offset_hz + band_hi + margin) / 1e3,
                 half / 1e3,
                 h.sample_rate_hz
             ));
