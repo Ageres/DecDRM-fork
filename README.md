@@ -203,6 +203,14 @@ messages, data objects and log lines as events.
 | `decdrm-cli` | The `decdrm` command-line tool |
 | `decdrm-gui` | The desktop GUI |
 
+## Acknowledgements
+
+DecDRM is written by [Arclamp](https://github.com/CasualArclamp); this fork is that work
+plus the HackRF output, and would not exist without it. Many thanks to the author for
+building and sharing it. Thanks also to the [Dream](https://sourceforge.net/projects/drm/)
+project, whose algorithms the signal processing borrows, and to the maintainers of the
+vendored FDK-AAC, libxaac and libopus.
+
 ## Licence
 
 GPL-2.0-or-later (it derives from Dream, which is GPL); the licence text is in
