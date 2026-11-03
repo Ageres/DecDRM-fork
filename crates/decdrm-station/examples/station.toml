@@ -41,7 +41,7 @@ band_limit = true            # transmit channel filter against the OFDM side lob
 # [output.hackrf]
 # frequency_hz = 1_530_000  # centre of the DRM channel on air, 1 MHz–6 GHz
 # sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel
-# if_offset_hz = 250_000    # IF within the HackRF's passband (0 = zero IF; the LO leaks there)
+# if_offset_hz = -250_000   # IF within the passband; negative puts the LO above the channel (0 = zero IF; the LO leaks there)
 # tx_gain_db = 40            # transmit VGA gain, 0–47 dB
 # amp_enable = false         # 14 dB RF amplifier
 # serial = "0000000000000000600463dc2b723cc7"  # which HackRF (any one if omitted)

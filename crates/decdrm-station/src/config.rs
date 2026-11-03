@@ -262,8 +262,8 @@ pub struct HackrfSettings {
     /// Intermediate frequency the signal is shifted to within the HackRF's
     /// passband, Hz. The local oscillator runs at `frequency_hz − if_offset_hz`,
     /// keeping the DRM channel clear of the HackRF's DC spike and LO leakage.
-    /// Default 250 kHz; |if_offset| plus half the DRM channel (up to 10 kHz)
-    /// must stay within a quarter of the sample rate.
+    /// Default −250 kHz (the oscillator above the channel); |if_offset| plus half
+    /// the DRM channel (up to 10 kHz) must stay within half the sample rate.
     pub if_offset_hz: f64,
     /// Transmit VGA gain, 0–47 dB (the final stage before the antenna).
     pub tx_gain_db: u32,
@@ -281,7 +281,7 @@ impl Default for HackrfSettings {
         Self {
             frequency_hz: 1_530_000,
             sample_rate_hz: 2_000_000,
-            if_offset_hz: 250_000.0,
+            if_offset_hz: -250_000.0,
             tx_gain_db: 40,
             amp_enable: false,
             serial: None,
@@ -291,9 +291,16 @@ impl Default for HackrfSettings {
 }
 
 impl HackrfSettings {
-    /// The local-oscillator frequency: below the channel centre by the IF offset.
+    /// The local-oscillator frequency: below the channel centre by the IF offset
+    /// (above it when the offset is negative), kept within the radio's 1 MHz floor.
     pub fn lo_hz(&self) -> u64 {
-        self.frequency_hz.saturating_sub(self.if_offset_hz.round() as u64).max(1_000_000)
+        u64::try_from(self.lo_hz_unclamped()).unwrap_or(0).max(1_000_000)
+    }
+
+    /// The local oscillator before the 1 MHz floor is applied: outside the radio's
+    /// range when the offset pushes it there, which the plan reports.
+    pub(crate) fn lo_hz_unclamped(&self) -> i128 {
+        i128::from(self.frequency_hz) - self.if_offset_hz.round() as i128
     }
 }
 

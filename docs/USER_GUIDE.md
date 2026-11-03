@@ -686,7 +686,7 @@ format = "iq"        # required, with iq_offset_hz = 0: the HackRF does its own 
 [output.hackrf]
 frequency_hz = 1_530_000   # centre of the DRM channel on air, 1 MHz–6 GHz
 sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel
-if_offset_hz = 250_000    # IF within the passband; 0 = zero IF (the LO leaks there)
+if_offset_hz = -250_000   # IF within the passband; negative puts the LO above the channel
 tx_gain_db = 40            # transmit VGA gain, 0–47 dB
 amp_enable = false         # the 14 dB RF amplifier
 # serial = "…23cc7"        # which HackRF (any one if omitted)
@@ -694,10 +694,14 @@ amp_enable = false         # the 14 dB RF amplifier
 ```
 
 Everything is optional but `format`: the defaults above transmit a 1.53 MHz
-medium-wave channel at 2 Msps; `frequency_hz` puts the DRM channel anywhere in the
-HackRF's 1 MHz–6 GHz range (e.g. 15_500_000 for the 15.5 MHz short-wave band). `buffer_s`
-of signal is queued before the radio starts, so a burst of encoding delay does not leave
-a gap on air.
+medium-wave channel at 2 Msps, the local oscillator at 1.78 MHz (250 kHz above the
+channel); `frequency_hz` puts the DRM channel anywhere in the HackRF's 1 MHz–6 GHz
+range (e.g. 15_500_000 for the 15.5 MHz short-wave band). A positive `if_offset_hz`
+puts the oscillator below the channel instead — handy where −250 kHz would take it
+over the radio's 6 GHz ceiling, while a negative one keeps it clear of the 1 MHz
+floor (the top of the medium wave); either way the signal keeps the same distance
+from the DC spike. `buffer_s` of signal is queued before the radio starts, so a burst
+of encoding delay does not leave a gap on air.
 
 **Windows driver.** The HackRF needs a WinUSB-class driver; install it once with
 [Zadig](https://zadig.akeo.ie/) (choose *WinUSB* for the HackRF One). On Linux the

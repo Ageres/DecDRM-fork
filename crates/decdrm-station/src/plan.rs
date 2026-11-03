@@ -577,9 +577,12 @@ fn check_output(cfg: &StationConfig, p: &mut Problems) {
         if !(1_000_000..=6_000_000_000).contains(&h.frequency_hz) {
             p.push(format!("hackrf: frequency_hz {} is outside the HackRF's 1 MHz–6 GHz range", h.frequency_hz));
         }
-        if h.frequency_hz.saturating_sub(h.if_offset_hz.round() as u64) < 1_000_000 {
+        // The oscillator sits at `frequency - if_offset`, so a negative offset moves
+        // it above the channel: check both ends of the radio's range.
+        let lo = h.lo_hz_unclamped();
+        if !(1_000_000..=6_000_000_000).contains(&lo) {
             p.push(format!(
-                "hackrf: if_offset_hz {} puts the local oscillator below the HackRF's 1 MHz lower limit",
+                "hackrf: if_offset_hz {} puts the local oscillator at {lo} Hz, outside the HackRF's 1 MHz–6 GHz range",
                 h.if_offset_hz
             ));
         }

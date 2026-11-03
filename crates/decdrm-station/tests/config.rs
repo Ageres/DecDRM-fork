@@ -611,13 +611,14 @@ fn hackrf_output() {
     let plan = cfg.validate().unwrap();
     assert!(plan.describe(&cfg).contains("hackrf"), "the plan names the output");
 
-    // The defaults: 1.53 MHz, 2 Msps, IF 250 kHz, LO 1.28 MHz.
+    // The defaults: 1.53 MHz, 2 Msps, IF -250 kHz, LO 1.78 MHz.
     let h = cfg.output.hackrf.clone().unwrap();
     assert_eq!(
-        (h.frequency_hz, h.sample_rate_hz, h.if_offset_hz as u32, h.tx_gain_db),
-        (1_530_000, 2_000_000, 250_000, 40)
+        (h.frequency_hz, h.sample_rate_hz, h.tx_gain_db),
+        (1_530_000, 2_000_000, 40)
     );
-    assert_eq!(h.lo_hz(), 1_280_000);
+    assert_eq!(h.if_offset_hz, -250_000.0);
+    assert_eq!(h.lo_hz(), 1_780_000);
 
     // Real format, a non-zero I/Q offset and swapped channels are rejected.
     for (what, format, offset, swap) in [
@@ -642,6 +643,17 @@ fn hackrf_output() {
         ("tx_gain_db", decdrm_station::HackrfSettings { tx_gain_db: 48, ..Default::default() }),
         ("if_offset_hz", decdrm_station::HackrfSettings { if_offset_hz: 10_000.0, ..Default::default() }),
         ("if_offset_hz", decdrm_station::HackrfSettings { if_offset_hz: 1_000_000.0, ..Default::default() }),
+        // With a positive offset, the oscillator at 1.1 MHz - 250 kHz = 850 kHz is
+        // below the radio's floor.
+        (
+            "local oscillator",
+            decdrm_station::HackrfSettings { frequency_hz: 1_100_000, if_offset_hz: 250_000.0, ..Default::default() },
+        ),
+        // ... and at 5.9999 GHz - (-250 kHz) = 6 000.15 MHz, above its ceiling.
+        (
+            "local oscillator",
+            decdrm_station::HackrfSettings { frequency_hz: 5_999_900_000, if_offset_hz: -250_000.0, ..Default::default() },
+        ),
     ] {
         let mut cfg = parse(&base());
         cfg.output.file = None;
@@ -649,6 +661,22 @@ fn hackrf_output() {
         cfg.output.hackrf = Some(h);
         let p = cfg.validate().unwrap_err().problems().to_vec();
         assert!(p.iter().any(|x| x.contains(what)), "{what}: {p:?}");
+    }
+
+    // A negative offset moves the local oscillator above the channel: 1.1 MHz is
+    // then usable (the oscillator lands at 1.35 MHz), where +250 kHz was not.
+    let mut cfg = parse(&base());
+    cfg.output.file = None;
+    cfg.output.format = SignalFormat::Iq;
+    cfg.output.hackrf = Some(decdrm_station::HackrfSettings {
+        frequency_hz: 1_100_000,
+        if_offset_hz: -250_000.0,
+        ..Default::default()
+    });
+    let h = cfg.output.hackrf.clone().unwrap();
+    assert_eq!(h.lo_hz(), 1_350_000);
+    if let Err(e) = cfg.validate() {
+        panic!("1.1 MHz with a negative IF should validate: {:?}", e.problems());
     }
 
     // Unknown keys are denied, as everywhere.

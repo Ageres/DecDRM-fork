@@ -780,7 +780,7 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                     format!("{:.4} MHz {:+.0} kHz IF", h.lo_hz as f64 / 1e6, h.if_offset_hz / 1e3),
                 )
                 .on_hover_text(
-                    "The local oscillator sits below the channel centre by the IF, clear of the radio's DC spike.",
+                    "The local oscillator sits below the channel centre by the IF (above it when if_offset_hz is negative), clear of the radio's DC spike.",
                 );
                 ui.end_row();
                 value(
