@@ -149,7 +149,7 @@ decdrm tx crates/decdrm-station/examples/station.toml --check     # show the mul
 decdrm tx crates/decdrm-station/examples/station.toml --duration 30 --output drm.wav
 
 # straight to a HackRF One ([output.hackrf]: frequency, sample rate, gain)
-decdrm tx crates/decdrm-station/examples/station-tx-hack-rf-mayak.toml --duration 60
+decdrm tx crates/decdrm-station/examples/station-tx-hack-rf-radio-example.toml --duration 60
 
 # desktop GUI
 cargo run --release -p decdrm-gui -- recording.flac

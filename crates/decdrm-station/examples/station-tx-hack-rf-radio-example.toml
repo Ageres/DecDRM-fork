@@ -1,4 +1,9 @@
-# Mayak relay: DRM30 through a HackRF One.
+# Radio relay example: DRM30 through a HackRF One.
+#
+# The input is a public placeholder: pick a stream you may lawfully relay — your own,
+# a CC-licensed one, or the broadcaster's with permission. A public station's stream
+# (a major broadcaster's, say) is meant for listening, not retransmission. A local file
+# with `loop = true` avoids the question entirely.
 [channel]
 mode = "B"
 occupancy = 3          # 10 kHz
@@ -19,7 +24,7 @@ tx_gain_db = 40
 amp_enable = true
 
 [[service]]
-label = "RADIO MAYAK"
+label = "RADIO EXAMPLE"
 id = 0x42
 programme_type = "Information"
 
@@ -27,9 +32,9 @@ programme_type = "Information"
 #codec = "he-aac"
 #codec = "he-aac-v2"
 codec = "xhe-aac"
-text = ["mayak"]
+text = ["radio example"]
 stereo = false
 
 [service.audio.input]
-url = "https://icecast-vgtrk.cdnvideo.ru/mayakfm_mp3_128kbps"
+url = "https://radio.example/live.mp3"   # replace with a stream you may relay
 stream_titles = true    # the stream's "now playing" as text messages
