@@ -40,7 +40,7 @@ band_limit = true            # transmit channel filter against the OFDM side lob
 # 15.5 MHz short-wave broadcast band.
 # [output.hackrf]
 # frequency_hz = 1_530_000  # nominal frequency of the channel (the DC carrier), 1 MHz–6 GHz
-# sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel
+# sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel (above ~4 the station may fall behind)
 # if_offset_hz = -250_000   # IF within the passband; negative puts the LO above the channel (0 = zero IF; the LO leaks there)
 # tx_gain_db = 40            # transmit VGA gain, 0–47 dB
 # amp_enable = false         # 14 dB RF amplifier

@@ -696,6 +696,23 @@ fn hackrf_output() {
 
     // Unknown keys are denied, as everywhere.
     assert!(StationConfig::from_toml_str("[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency = 1\n").is_err());
+
+    // A rate the station cannot usually feed in real time is flagged in the plan, but
+    // stays valid: it is a warning about the machine, not about the configuration.
+    let plan_of = |rate: u32| {
+        let mut cfg = parse(&base());
+        cfg.output.file = None;
+        cfg.output.format = SignalFormat::Iq;
+        cfg.output.hackrf = Some(decdrm_station::HackrfSettings {
+            sample_rate_hz: rate,
+            ..Default::default()
+        });
+        let plan = cfg.validate().expect("valid");
+        plan.describe(&cfg)
+    };
+    assert!(!plan_of(2_000_000).contains("may not keep real time"));
+    assert!(!plan_of(4_000_000).contains("may not keep real time"));
+    assert!(plan_of(8_000_000).contains("may not keep real time"));
 }
 
 /// The channel and the local oscillator must both fit the radio's 1 MHz-6 GHz

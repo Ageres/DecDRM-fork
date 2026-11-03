@@ -347,6 +347,13 @@ impl MultiplexPlan {
                 h.tx_gain_db,
                 if h.amp_enable { ", RF amp on" } else { "" }
             );
+            if h.sample_rate_hz > HackrfSettings::REAL_TIME_RATE_HZ {
+                let _ = writeln!(
+                    s,
+                    "        note: above {} Msps the station may not keep real time (the resampler runs on its thread): expect underruns, and the radio may stop taking data; 2 Msps is plenty for DRM",
+                    HackrfSettings::REAL_TIME_RATE_HZ / 1_000_000
+                );
+            }
         }
         let afs = &cfg.afs;
         if !afs.is_empty() {

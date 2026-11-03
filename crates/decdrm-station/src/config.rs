@@ -260,8 +260,12 @@ pub struct HackrfSettings {
     /// are not symmetric about it: the signal spans about -4.6..+14.6 kHz, so its
     /// centre of power is a few kHz higher.
     pub frequency_hz: u64,
-    /// HackRF sample rate, Hz. 2–20 MHz; the default of 2 MHz is plenty for a
-    /// DRM channel (≤ 20 kHz wide).
+    /// HackRF sample rate, Hz. The radio accepts 2–20 MHz, but the station has to
+    /// resample its 48 kHz baseband to it on its own thread and hand two bytes per
+    /// sample to USB: 2 MHz (the default) is plenty for a DRM channel (≤ 20 kHz
+    /// wide), and above [`Self::REAL_TIME_RATE_HZ`] a typical machine falls behind,
+    /// the radio underruns and may stop taking data altogether. A higher rate buys
+    /// nothing for DRM; it only widens the passband.
     pub sample_rate_hz: u32,
     /// Intermediate frequency the signal is shifted to within the HackRF's
     /// passband, Hz. The local oscillator runs at `frequency_hz - if_offset_hz`,
@@ -300,6 +304,13 @@ impl HackrfSettings {
     /// The radio's frequency span, Hz (both the local oscillator and the channel
     /// have to stay inside it).
     pub const RANGE_HZ: std::ops::RangeInclusive<u64> = 1_000_000..=6_000_000_000;
+
+    /// The highest sample rate the station usually keeps up with in real time, Hz.
+    /// The radio takes more (2–20 MHz), but every sample costs a resampler step and
+    /// two bytes of USB writes on the station's thread; measured on a typical desktop,
+    /// 4 Msps keeps real time and 8 Msps does not (the radio then underruns). Not a
+    /// hard limit: a faster machine may.
+    pub const REAL_TIME_RATE_HZ: u32 = 4_000_000;
 
     /// The transmit frequencies that keep both the channel and the local
     /// oscillator (`frequency - if_offset`) inside [`Self::RANGE_HZ`], Hz.

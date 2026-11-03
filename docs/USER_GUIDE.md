@@ -703,6 +703,13 @@ frequency field is clamped to that span. `buffer_s` of signal is queued before t
 radio starts, so a burst of encoding delay does not leave a gap on air (0.05–10 s; the
 queue is capped at 64 MB, so a high sample rate shortens it).
 
+Keep `sample_rate_hz` at 2 Msps (or up to about 4): the station resamples its 48 kHz
+baseband to the radio's rate on its own thread, and from 8 Msps upwards a typical
+machine cannot hand two bytes per sample to USB in real time. The radio then underruns —
+gaps on air, counted as *underruns* in the status — and can stop taking data, which ends
+the transmission with a write timeout. A higher rate buys nothing for a DRM channel; it
+only widens the passband. The plan printed by `decdrm tx --check` says so too.
+
 With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
 axis reads `frequency (kHz on air)`, the DC carrier sits at the nominal frequency, and
 the hover label is in MHz.
