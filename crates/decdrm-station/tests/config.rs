@@ -599,6 +599,7 @@ fn modulator_section() {
 /// The HackRF output: needs I/Q format (zero offset, not swapped), a frequency,
 /// sample rate and IF within the radio's ranges, and works without a file or
 /// sound card.
+#[cfg(feature = "hackrf")]
 #[test]
 fn hackrf_output() {
     use decdrm_station::SignalFormat;
@@ -685,6 +686,7 @@ fn hackrf_output() {
 
 /// The channel and the local oscillator must both fit the radio's 1 MHz-6 GHz
 /// span, so the usable frequency range follows the IF offset.
+#[cfg(feature = "hackrf")]
 #[test]
 fn hackrf_frequency_span_follows_the_if() {
     use decdrm_station::HackrfSettings;

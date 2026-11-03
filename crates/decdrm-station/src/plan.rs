@@ -562,6 +562,9 @@ fn check_output(cfg: &StationConfig, p: &mut Problems) {
         p.push(format!("output: level_dbfs {} is outside -60..0 dBFS", out.level_dbfs));
     }
     if let Some(h) = &out.hackrf {
+        if !cfg!(feature = "hackrf") {
+            p.push("output: this build has no HackRF output (feature \"hackrf\")");
+        }
         if out.format != crate::config::SignalFormat::Iq {
             p.push("output: hackrf needs format = \"iq\" (complex baseband; it shifts the signal to its IF itself)");
         }

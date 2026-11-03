@@ -43,6 +43,7 @@ mod data;
 mod error;
 mod feeds;
 mod fac;
+#[cfg(feature = "hackrf")]
 mod hackrf;
 pub mod mdi;
 mod modulator;
@@ -60,8 +61,10 @@ pub use config::{
     HackrfSettings, JournalineFile, JournalinePage, MdiSettings, OutputSettings, Part, ProgrammeType, SampleFormat,
     ServiceSettings, SignalFormat, SimulateSettings, StationConfig, TimeSettings,
 };
-pub use hackrf::{HackrfDevice, HackrfStatus};
+#[cfg(feature = "hackrf")]
 pub use hackrf::devices as hackrf_devices;
+#[cfg(feature = "hackrf")]
+pub use hackrf::{HackrfDevice, HackrfStatus};
 pub use modulator::ModulatorStatus;
 pub use data::load_journaline;
 pub use error::{ConfigProblems, Result, StationError};
