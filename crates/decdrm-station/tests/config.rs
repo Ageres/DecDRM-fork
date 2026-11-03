@@ -682,3 +682,31 @@ fn hackrf_output() {
     // Unknown keys are denied, as everywhere.
     assert!(StationConfig::from_toml_str("[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency = 1\n").is_err());
 }
+
+/// The channel and the local oscillator must both fit the radio's 1 MHz-6 GHz
+/// span, so the usable frequency range follows the IF offset.
+#[test]
+fn hackrf_frequency_span_follows_the_if() {
+    use decdrm_station::HackrfSettings;
+    // The default: the oscillator 250 kHz above the channel.
+    assert_eq!(
+        HackrfSettings::frequency_range_for(-250_000.0),
+        (1_000_000, 5_999_750_000)
+    );
+    // A positive offset sits below the channel: the top stays reachable, the bottom moves up.
+    assert_eq!(
+        HackrfSettings::frequency_range_for(250_000.0),
+        (1_250_000, 6_000_000_000)
+    );
+    assert_eq!(HackrfSettings::frequency_range_for(0.0), (1_000_000, 6_000_000_000));
+    assert_eq!(HackrfSettings::default().frequency_range(), (1_000_000, 5_999_750_000));
+
+    // The top of the default span validates; a channel above it reports the oscillator.
+    let with_hackrf = |hz: u64| {
+        let mut text = base().replace("[output]", "[output]\nformat = \"iq\"");
+        text.push_str(&format!("\n[output.hackrf]\nfrequency_hz = {hz}\n"));
+        text
+    };
+    assert!(parse(&with_hackrf(5_999_700_000)).validate().is_ok());
+    assert!(has(&problems(&with_hackrf(5_999_800_000)), "local oscillator"));
+}

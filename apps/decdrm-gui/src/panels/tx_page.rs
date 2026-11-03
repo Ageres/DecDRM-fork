@@ -64,6 +64,9 @@ pub struct TxPage {
     dialog_armed: bool,
     /// The HackRF error the dialog shows, while it is open.
     error_dialog: Option<String>,
+    /// The IF the station file asks the radio for (the default until a check says
+    /// otherwise): with it, the frequency field's usable span follows.
+    hackrf_if_offset_hz: f64,
 }
 
 impl TxPage {
@@ -89,6 +92,7 @@ impl TxPage {
             hackrf_scan: None,
             dialog_armed: false,
             error_dialog: None,
+            hackrf_if_offset_hz: decdrm_station::HackrfSettings::default().if_offset_hz,
         };
         if let Some(path) = settings.station_config.clone()
             && let Err(e) = page.load(&path)
@@ -245,6 +249,10 @@ impl TxPage {
                 Ok((cfg, plan)) => {
                     // A modulator's multiplex comes with the MDI.
                     self.bar = plan.mdi.is_none().then(|| PlanBar::of(&cfg, &plan));
+                    // The radio's usable span depends on the IF the file asks for.
+                    if let Some(h) = &cfg.output.hackrf {
+                        self.hackrf_if_offset_hz = h.if_offset_hz;
+                    }
                     (
                         Checked::Ok {
                             plan: plan.describe(&cfg),
@@ -515,7 +523,9 @@ impl TxPage {
                 }
                 TxOutput::File => output_file_picker(ui, settings),
                 TxOutput::Device => output_device_picker(ui, settings, devices),
-                TxOutput::Hackrf => output_hackrf_picker(ui, settings, &mut self.hackrf_scan),
+                TxOutput::Hackrf => {
+                    output_hackrf_picker(ui, settings, &mut self.hackrf_scan, self.hackrf_if_offset_hz)
+                }
             }
             ui.separator();
             ui.checkbox(&mut settings.tx_duration_enabled, "Stop after");
@@ -1131,6 +1141,7 @@ fn output_hackrf_picker(
     ui: &mut Ui,
     settings: &mut Settings,
     scan: &mut Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+    if_offset_hz: f64,
 ) {
     /// Broadcast bands to start from (kHz): 70 kHz below each band's middle, 40 kHz
     /// for the narrow 75 m and 15 m (70 would leave their band), and the
@@ -1171,16 +1182,21 @@ fn output_hackrf_picker(
         .on_hover_text(
             "Broadcast bands, 70 kHz below each band's middle (40 kHz in the narrow 75 m and 15 m); drag the frequency for anything else.",
         );
+    // The radio's span less the IF: the channel and the local oscillator must both
+    // stay inside it (1 MHz … 6 GHz), so the field cannot leave it either.
+    let (min_hz, max_hz) = decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz);
+    let (min_khz, max_khz) = (min_hz as f64 / 1_000.0, max_hz as f64 / 1_000.0);
+    settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
-            .range(1_000.0..=6_000_000.0)
+            .range(min_khz..=max_khz)
             .speed(1.0)
             .max_decimals(1)
             .suffix(" kHz"),
     )
-    .on_hover_text(
-        "Centre of the DRM channel on air (the rest of [output.hackrf] comes from the station file).",
-    );
+    .on_hover_text(format!(
+        "Centre of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the file's if_offset_hz {if_offset_hz:.0} (the rest of [output.hackrf] comes from the station file)."
+    ));
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_gain_db)
             .range(0..=47)

@@ -254,7 +254,9 @@ impl Default for OutputSettings {
 pub struct HackrfSettings {
     /// Centre frequency of the DRM channel on air, Hz. Defaults to 1_530_000 (a
     /// medium-wave broadcast channel); e.g. 15_500_000 for the 15.5 MHz short-wave
-    /// broadcast band.
+    /// broadcast band. The usable span is [`HackrfSettings::frequency_range`]: the
+    /// channel and the local oscillator must both stay inside
+    /// [`HackrfSettings::RANGE_HZ`].
     pub frequency_hz: u64,
     /// HackRF sample rate, Hz. 2–20 MHz; the default of 2 MHz is plenty for a
     /// DRM channel (≤ 20 kHz wide).
@@ -291,6 +293,27 @@ impl Default for HackrfSettings {
 }
 
 impl HackrfSettings {
+    /// The radio's frequency span, Hz (both the local oscillator and the channel
+    /// have to stay inside it).
+    pub const RANGE_HZ: std::ops::RangeInclusive<u64> = 1_000_000..=6_000_000_000;
+
+    /// The transmit frequencies that keep both the channel and the local
+    /// oscillator (`frequency - if_offset`) inside [`Self::RANGE_HZ`], Hz.
+    /// With the default −250 kHz offset: 1 MHz … 5 999 750 000 Hz.
+    pub fn frequency_range(&self) -> (u64, u64) {
+        Self::frequency_range_for(self.if_offset_hz)
+    }
+
+    /// [`Self::frequency_range`] for a given IF offset, without constructing the
+    /// settings: what the GUI clamps its frequency field to.
+    pub fn frequency_range_for(if_offset_hz: f64) -> (u64, u64) {
+        let (floor, ceiling) = (*Self::RANGE_HZ.start(), *Self::RANGE_HZ.end());
+        let offset = if_offset_hz.round();
+        let lower = (floor as f64 + offset).max(floor as f64);
+        let upper = (ceiling as f64 + offset).min(ceiling as f64);
+        (lower as u64, (upper.max(lower)) as u64)
+    }
+
     /// The local-oscillator frequency: below the channel centre by the IF offset
     /// (above it when the offset is negative), kept within the radio's 1 MHz floor.
     pub fn lo_hz(&self) -> u64 {

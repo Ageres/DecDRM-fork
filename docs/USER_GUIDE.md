@@ -695,13 +695,12 @@ amp_enable = false         # the 14 dB RF amplifier
 
 Everything is optional but `format`: the defaults above transmit a 1.53 MHz
 medium-wave channel at 2 Msps, the local oscillator at 1.78 MHz (250 kHz above the
-channel); `frequency_hz` puts the DRM channel anywhere in the HackRF's 1 MHz–6 GHz
-range (e.g. 15_500_000 for the 15.5 MHz short-wave band). A positive `if_offset_hz`
-puts the oscillator below the channel instead — handy where −250 kHz would take it
-over the radio's 6 GHz ceiling, while a negative one keeps it clear of the 1 MHz
-floor (the top of the medium wave); either way the signal keeps the same distance
-from the DC spike. `buffer_s` of signal is queued before the radio starts, so a burst
-of encoding delay does not leave a gap on air.
+channel). `frequency_hz` may be set anywhere the radio and its oscillator both fit:
+1 MHz–6 GHz for the channel *and* for `frequency_hz - if_offset_hz`. With the default
+−250 kHz that is **1 MHz … 5 999.75 MHz** (the oscillator would leave the top of the
+band above that); with a positive offset the span becomes 1.25 MHz … 6 GHz. The GUI's
+frequency field is clamped to that span. `buffer_s` of signal is queued before the
+radio starts, so a burst of encoding delay does not leave a gap on air.
 
 **Windows driver.** The HackRF needs a WinUSB-class driver; install it once with
 [Zadig](https://zadig.akeo.ie/) (choose *WinUSB* for the HackRF One). On Linux the
