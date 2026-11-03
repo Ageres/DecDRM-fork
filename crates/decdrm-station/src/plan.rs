@@ -538,7 +538,7 @@ pub(crate) fn output_config(out: &crate::config::OutputSettings, layout: Option<
 }
 
 /// Checks of `[output]`.
-fn check_output(cfg: &StationConfig, p: &mut Problems) {
+fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Problems) {
     let out = &cfg.output;
     if out.file.is_none() && out.device.is_none() && out.hackrf.is_none() {
         p.push("output: set `file`, `device` and/or `hackrf`");
@@ -604,11 +604,25 @@ fn check_output(cfg: &StationConfig, p: &mut Problems) {
                 h.if_offset_hz
             ));
         }
-        // Half of the widest DRM channel, as a guard band around the IF.
-        if h.if_offset_hz.abs() + 10_000.0 > f64::from(h.sample_rate_hz) / 2.0 {
+        // The whole signal, from its lowest to its highest carrier, has to fit into
+        // the radio's passband. The 18 and 20 kHz occupancies reach about 14.6 kHz
+        // above the DC carrier and only 4.6 kHz below it, so half the nominal
+        // bandwidth is not the room they need.
+        let (lo, hi) =
+            layout.map_or((-10_000.0, 10_000.0), decdrm_core::tx::output::carrier_span_hz);
+        // Half a carrier of guard for the outermost carriers' main lobes.
+        let margin = layout.map_or(0.0, |l| l.mode.carrier_spacing() / 2.0);
+        let half = f64::from(h.sample_rate_hz) / 2.0;
+        if h.if_offset_hz + lo - margin < -half || h.if_offset_hz + hi + margin > half {
             p.push(format!(
-                "hackrf: if_offset_hz {} plus the DRM channel does not fit into half of sample_rate_hz {}",
-                h.if_offset_hz, h.sample_rate_hz
+                "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of sample_rate_hz {}",
+                lo / 1e3,
+                hi / 1e3,
+                h.if_offset_hz,
+                (h.if_offset_hz + lo - margin) / 1e3,
+                (h.if_offset_hz + hi + margin) / 1e3,
+                half / 1e3,
+                h.sample_rate_hz
             ));
         }
     }
@@ -647,11 +661,12 @@ fn build_mdi(cfg: &StationConfig, m: &crate::config::MdiSettings) -> Result<Mult
     if !(1..=50).contains(&m.buffer_frames) {
         p.push(format!("mdi: buffer_frames {} is outside 1-50", m.buffer_frames));
     }
-    check_output(cfg, &mut p);
-    check_simulate(cfg, &mut p);
-    p.finish()?;
+    // The channel is a placeholder until the MDI arrives: the default mode B, 10 kHz.
     let tx = TxConfig::default();
     let layout = ChannelLayout::new(tx.mode, tx.occupancy).expect("the default layout exists");
+    check_output(cfg, Some(layout), &mut p);
+    check_simulate(cfg, &mut p);
+    p.finish()?;
     let transmitter = Transmitter::new(tx)?;
     let capacity = transmitter.msc_capacity();
     // One stream filling the frame: a valid description for the parts of the station
@@ -715,7 +730,7 @@ fn build(cfg: &StationConfig) -> Result<MultiplexPlan> {
     }
 
     // --- Output.
-    check_output(cfg, &mut p);
+    check_output(cfg, layout, &mut p);
     let output = output_config(&cfg.output, layout);
     if let Some(l) = layout
         && let Err(e) = OutputStage::new(l, output)

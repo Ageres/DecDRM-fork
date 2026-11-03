@@ -712,3 +712,31 @@ fn hackrf_frequency_span_follows_the_if() {
     assert!(parse(&with_hackrf(5_999_700_000)).validate().is_ok());
     assert!(has(&problems(&with_hackrf(5_999_800_000)), "local oscillator"));
 }
+
+/// The 18 and 20 kHz occupancies are not symmetric about the DC carrier (the signal
+/// reaches about 14.6 kHz above it and 4.6 kHz below), so the check that the channel
+/// fits the radio's passband must use the real span, not half the nominal bandwidth.
+#[cfg(feature = "hackrf")]
+#[test]
+fn hackrf_if_check_uses_the_real_spectrum() {
+    let check = |occupancy: u8, if_offset_hz: f64| {
+        let mut cfg = parse(&base());
+        cfg.output.file = None;
+        cfg.output.format = decdrm_station::SignalFormat::Iq;
+        cfg.channel.occupancy = occupancy;
+        // A high frequency, so only the passband check can object (the oscillator
+        // would otherwise leave the radio's range).
+        cfg.output.hackrf = Some(decdrm_station::HackrfSettings {
+            frequency_hz: 100_000_000,
+            if_offset_hz,
+            ..Default::default()
+        });
+        cfg.validate().map(|_| ()).map_err(|e| e.problems().to_vec())
+    };
+    // 10 kHz: -4.83..+4.83 kHz around the IF, so +990 kHz still fits into +-1 MHz.
+    assert!(check(3, 990_000.0).is_ok());
+    // 20 kHz: -4.64..+14.58 kHz, so the top carrier of +990 kHz lands at 1004.6 kHz.
+    let p = check(5, 990_000.0).unwrap_err();
+    assert!(p.iter().any(|x| x.contains("outside +-1000 kHz")), "{p:?}");
+    assert!(check(5, 985_000.0).is_ok());
+}
