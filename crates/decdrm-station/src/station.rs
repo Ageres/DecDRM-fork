@@ -677,6 +677,7 @@ impl Station {
             amp: h.settings().amp_enable,
             transmitted_s: h.transmitted_s(),
             queued_s: h.queued_s(),
+            underruns: h.underruns(),
         });
         st.sdc_blocks = self.sdc.blocks;
         st.sdc_bytes_used = self.sdc.last_used;

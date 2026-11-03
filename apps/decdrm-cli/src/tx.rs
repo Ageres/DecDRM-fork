@@ -145,7 +145,15 @@ fn print_status(s: &StationStatus) {
         if s.device.is_some() { format!(", {} underruns", s.device_underruns) } else { String::new() }
     );
     if let Some(h) = &s.hackrf {
-        println!("          hackrf: {:.1} s transmitted, {:.1} s buffered", h.transmitted_s, h.queued_s);
+        let underruns = if h.underruns > 0 {
+            format!(", {} underruns", h.underruns)
+        } else {
+            String::new()
+        };
+        println!(
+            "          hackrf: {:.1} s transmitted, {:.1} s buffered{underruns}",
+            h.transmitted_s, h.queued_s
+        );
     }
     if let Some(m) = &s.mdi {
         let state = if m.waiting { "waiting for MDI".to_string() } else { m.channel.clone().unwrap_or_default() };

@@ -27,7 +27,7 @@ use crate::station::StopHandle;
 use decdrm_io::{Resampler, ResamplerQuality};
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// USB ids of every HackRF One.
 const VENDOR_ID: u16 = 0x1d50;
@@ -61,6 +61,10 @@ const USB_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long any wait on the queue re-checks its condition (stop flags, errors).
 const POLL: Duration = Duration::from_millis(50);
 
+/// How long the queue must stay empty, while transmitting, before it is called an
+/// underrun: the radio's own buffer bridges shorter gaps.
+const UNDERRUN_GUARD: Duration = Duration::from_millis(100);
+
 /// Settings that describe the radio on air, for [`crate::StationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HackrfStatus {
@@ -80,6 +84,9 @@ pub struct HackrfStatus {
     pub transmitted_s: f64,
     /// Seconds of signal buffered in the station, not yet handed to USB.
     pub queued_s: f64,
+    /// Times the station fell behind and left the radio's buffer empty while
+    /// transmitting (each risks a gap on air; should stay 0).
+    pub underruns: u64,
 }
 
 /// The queue between the station and the writer thread.
@@ -89,6 +96,8 @@ struct Shared {
     queue: VecDeque<u8>,
     /// Bytes handed to USB so far.
     sent_bytes: u64,
+    /// Times the queue ran dry while transmitting: the station fell behind.
+    underruns: u64,
     /// The station asked for the tail to be flushed and the radio stopped.
     finishing: bool,
     /// The writer is done (radio off, or failed, or stopped).
@@ -179,6 +188,11 @@ impl HackrfSink {
         s.queue.len() as f64 / (f64::from(self.settings.sample_rate_hz) * 2.0)
     }
 
+    /// Times the queue ran dry while transmitting (see [`HackrfStatus::underruns`]).
+    pub fn underruns(&self) -> u64 {
+        self.sync.state.lock().expect("the queue lock").underruns
+    }
+
     /// Queue interleaved 48 kHz I/Q samples for the radio. Waits while the
     /// queue holds more than the prebuffer of headroom (checking `stop` in
     /// slices), which paces the station to real time.
@@ -266,6 +280,10 @@ fn writer_loop(
 ) {
     let mut block = vec![0u8; BLOCK_BYTES];
     let mut started = false;
+    // When the queue ran dry while transmitting, and whether that episode has been
+    // counted already (one per episode, and only past `UNDERRUN_GUARD`).
+    let mut starving_since: Option<Instant> = None;
+    let mut starving_counted = false;
     'outer: loop {
         // Wait for work: data to send, the finish signal, or abandonment.
         let mut s = sync.state.lock().expect("the queue lock");
@@ -286,7 +304,24 @@ fn writer_loop(
             // prebuffer must be there (writing to the endpoint of an idle radio
             // would block until the timeout).
             if !s.queue.is_empty() && (started || s.queue.len() >= prebuffer_bytes) {
+                starving_since = None;
+                starving_counted = false;
                 break;
+            }
+            // Transmitting with nothing queued: the station fell behind and the
+            // radio's buffer is draining. Counted as an underrun once the queue has
+            // been empty for `UNDERRUN_GUARD`: the radio's buffer bridges shorter
+            // gaps, and the tail of a transmission drains the queue too.
+            if started
+                && !s.finishing
+                && starvation_episode(
+                    &mut starving_since,
+                    &mut starving_counted,
+                    UNDERRUN_GUARD,
+                    Instant::now(),
+                )
+            {
+                s.underruns += 1;
             }
             let (guard, _) = sync.data.wait_timeout(s, POLL).expect("the queue lock");
             s = guard;
@@ -365,6 +400,28 @@ fn shift_and_convert(samples: &[f32], phase: &mut f64, phase_inc: f64, out: &mut
         }
     }
     *phase = ph;
+}
+
+/// Track one episode of the queue running dry while transmitting: `true` once,
+/// when the episode has lasted `guard` (the radio's own buffer bridges shorter
+/// gaps). `since`/`counted` are reset when data arrives again.
+fn starvation_episode(
+    since: &mut Option<Instant>,
+    counted: &mut bool,
+    guard: Duration,
+    now: Instant,
+) -> bool {
+    match *since {
+        None => {
+            *since = Some(now);
+            false
+        }
+        Some(start) if !*counted && now.duration_since(start) >= guard => {
+            *counted = true;
+            true
+        }
+        Some(_) => false,
+    }
 }
 
 /// Find the HackRF with this serial (or the first one) and open it.
@@ -632,5 +689,48 @@ mod tests {
         let mut phase = 0.0;
         shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut phase, 0.0, &mut bytes);
         assert_eq!(bytes, [127, 127, 0x81 /* −127 */, 0]);
+    }
+
+    /// A dry queue counts as an underrun once, and only after the guard: the
+    /// radio's buffer bridges shorter gaps, and the station resets the episode
+    /// when data arrives again.
+    #[test]
+    fn starvation_counts_once_past_the_guard() {
+        let guard = Duration::from_millis(100);
+        let t0 = Instant::now();
+        let mut since = None;
+        let mut counted = false;
+        // The first sighting only starts the episode.
+        assert!(!starvation_episode(&mut since, &mut counted, guard, t0));
+        // Shorter than the guard: the radio's buffer covers it.
+        assert!(!starvation_episode(
+            &mut since,
+            &mut counted,
+            guard,
+            t0 + Duration::from_millis(50)
+        ));
+        // Past the guard: an underrun, counted.
+        assert!(starvation_episode(
+            &mut since,
+            &mut counted,
+            guard,
+            t0 + Duration::from_millis(120)
+        ));
+        // Still dry: not counted again.
+        assert!(!starvation_episode(
+            &mut since,
+            &mut counted,
+            guard,
+            t0 + Duration::from_millis(500)
+        ));
+        // Data arrived (the loop resets the episode), then it runs dry again.
+        since = Some(t0);
+        counted = false;
+        assert!(starvation_episode(
+            &mut since,
+            &mut counted,
+            guard,
+            t0 + Duration::from_millis(200)
+        ));
     }
 }

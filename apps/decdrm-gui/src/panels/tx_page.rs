@@ -739,6 +739,13 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                         "Signal held in the station as headroom; it should stay near `buffer_s`. Near zero risks an underrun.",
                     );
                 ui.end_row();
+                let underruns = RichText::new(h.underruns.to_string()).monospace();
+                ui.label(RichText::new("Underruns").weak());
+                ui.label(if h.underruns > 0 { underruns.color(pal.error) } else { underruns })
+                    .on_hover_text(
+                        "Times the station fell behind and left the radio's buffer empty — each risks a gap on air; should stay 0.",
+                    );
+                ui.end_row();
             }
             if let Some(dev) = &s.device {
                 value(ui, "Sound card", dev.as_str());
