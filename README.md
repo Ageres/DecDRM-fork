@@ -21,7 +21,8 @@ encoding) and libopus.
 > **Status:** the receiver decodes audio, text messages and data services from every
 > DRM test recording available here (modes A/B/C, 9–20 kHz, real and I/Q inputs,
 > inverted spectra, clock offsets up to 1250 ppm, AAC/HE-AAC/xHE-AAC/Opus). The
-> transmitter produces complete multiplexes that the receiver decodes. See
+> transmitter produces complete multiplexes that the receiver decodes, and has been put
+> on the air through a HackRF One at low power in lab conditions. See
 > [docs/DESIGN.md](docs/DESIGN.md) for the plan and milestone status.
 
 ## Highlights
@@ -101,7 +102,7 @@ cargo build --release
 
 Requirements: Rust 1.88 or newer (1.95 for the GUI), a C/C++ compiler (MSVC Build Tools
 on Windows, gcc on Linux) and CMake for the vendored codecs, and on Linux the ALSA
-development package (`libasound2-dev`; `libudev-dev` for the HackRF output's libusb).
+development package (`libasound2-dev`) plus `libudev-dev` for the HackRF output's libusb.
 
 **Portable Windows executables**: `decdrm-gui.exe` and `decdrm.exe` that run on any
 64-bit Windows 10/11 with nothing installed (C runtime linked statically, DAC with its
@@ -162,9 +163,10 @@ loopback instead of an antenna.
 baseband is resampled to the radio's rate and shifted to an IF away from its DC spike,
 then sent over USB through libusb — no libhackrf and no sound card needed. The radio
 needs its USB driver: on Windows the WinUSB driver, installed once with
-[Zadig](https://zadig.akeo.ie/); on Linux the udev rule that ships with libhackrf
-(`SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="6089", MODE="0660",
-GROUP="plugdev"`), so that a normal user can open the radio (running as root also works).
+[Zadig](https://zadig.akeo.ie/); on Linux the udev rule from libhackrf's
+`53-hackrf.rules` (`SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="6089",
+MODE="0660", GROUP="plugdev"`), so that a normal user can open the radio (running as root
+also works).
 The [user guide](docs/USER_GUIDE.md#transmitting-through-a-hackrf-one) covers the
 settings and the test setup.
 
