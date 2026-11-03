@@ -60,7 +60,8 @@ pub use config::{
     HackrfSettings, JournalineFile, JournalinePage, MdiSettings, OutputSettings, Part, ProgrammeType, SampleFormat,
     ServiceSettings, SignalFormat, SimulateSettings, StationConfig, TimeSettings,
 };
-pub use hackrf::HackrfStatus;
+pub use hackrf::{HackrfDevice, HackrfStatus};
+pub use hackrf::devices as hackrf_devices;
 pub use modulator::ModulatorStatus;
 pub use data::load_journaline;
 pub use error::{ConfigProblems, Result, StationError};

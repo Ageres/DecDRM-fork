@@ -57,6 +57,9 @@ pub struct TxPage {
     bar: Option<PlanBar>,
     /// Check again at this time (after form edits settle).
     recheck_at: Option<Instant>,
+    /// The HackRF Ones on the USB bus, scanned when the output mode first asks
+    /// (`None` until then) or by the button; an error is the enumeration's.
+    hackrf_scan: Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
 }
 
 impl TxPage {
@@ -79,6 +82,7 @@ impl TxPage {
             doc: None,
             bar: None,
             recheck_at: None,
+            hackrf_scan: None,
         };
         if let Some(path) = settings.station_config.clone()
             && let Err(e) = page.load(&path)
@@ -446,7 +450,7 @@ impl TxPage {
                 }
                 TxOutput::File => output_file_picker(ui, settings),
                 TxOutput::Device => output_device_picker(ui, settings, devices),
-                TxOutput::Hackrf => output_hackrf_picker(ui, settings),
+                TxOutput::Hackrf => output_hackrf_picker(ui, settings, &mut self.hackrf_scan),
             }
             ui.separator();
             ui.checkbox(&mut settings.tx_duration_enabled, "Stop after");
@@ -1051,7 +1055,11 @@ fn output_file_picker(ui: &mut Ui, settings: &mut Settings) {
     }
 }
 
-fn output_hackrf_picker(ui: &mut Ui, settings: &mut Settings) {
+fn output_hackrf_picker(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    scan: &mut Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+) {
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
             .range(1_000.0..=6_000_000.0)
@@ -1071,6 +1079,44 @@ fn output_hackrf_picker(ui: &mut Ui, settings: &mut Settings) {
     .on_hover_text("HackRF transmit VGA gain, 0–47 dB.");
     ui.checkbox(&mut settings.tx_hackrf_amp, "RF amp")
         .on_hover_text("The HackRF's 14 dB RF amplifier.");
+    ui.separator();
+    if scan.is_none() {
+        *scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+    }
+    if ui
+        .small_button("Scan")
+        .on_hover_text("Look for HackRF Ones on the USB bus again")
+        .clicked()
+    {
+        *scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+    }
+    let driver_hint = "Windows: the radio needs its WinUSB driver (Zadig); Linux: libhackrf's udev rule, or run as root.";
+    match scan {
+        Some(Ok(list)) if list.is_empty() => {
+            ui.colored_label(ui.visuals().warn_fg_color, "no HackRF found")
+                .on_hover_text(format!("Check that the radio is connected and not in use by another program. {driver_hint}"));
+        }
+        Some(Ok(list)) => {
+            let serials: Vec<&str> = list
+                .iter()
+                .map(|d| d.serial.as_deref().unwrap_or("serial unreadable"))
+                .collect();
+            let failed = list.iter().filter(|d| d.error.is_some()).count();
+            let summary = match failed {
+                0 => format!("{} found", list.len()),
+                n if n == list.len() => "cannot open".to_string(),
+                n => format!("{} found, {n} cannot open", list.len()),
+            };
+            let text = RichText::new(summary).monospace();
+            ui.label(if failed > 0 { text.color(ui.visuals().warn_fg_color) } else { text })
+                .on_hover_text(format!("{}{driver_hint}", serials.join("\n")));
+        }
+        Some(Err(e)) => {
+            ui.colored_label(ui.visuals().warn_fg_color, "USB scan failed")
+                .on_hover_text(e.as_str());
+        }
+        None => {}
+    }
 }
 
 fn output_device_picker(ui: &mut Ui, settings: &mut Settings, devices: &mut DeviceLists) {

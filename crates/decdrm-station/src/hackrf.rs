@@ -381,16 +381,7 @@ fn open_device(serial: Option<&str>) -> Result<rusb::DeviceHandle<rusb::GlobalCo
         }
         match device.open() {
             Ok(handle) => {
-                let sn = handle
-                    .read_languages(Duration::from_secs(1))
-                    .ok()
-                    .and_then(|langs| langs.first().copied())
-                    .and_then(|lang| {
-                        handle
-                            .read_serial_number_string(lang, &desc, Duration::from_secs(1))
-                            .ok()
-                    })
-                    .unwrap_or_default();
+                let sn = read_serial(&handle, &desc).unwrap_or_default();
                 found.push((handle, sn));
             }
             Err(e) => {
@@ -412,6 +403,59 @@ fn open_device(serial: Option<&str>) -> Result<rusb::DeviceHandle<rusb::GlobalCo
             .map(|(handle, _)| handle)
             .ok_or_else(|| StationError::Hackrf(format!("no HackRF with serial number \"{serial}\""))),
     }
+}
+
+/// The radio's serial number, if it answers.
+fn read_serial(
+    handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    desc: &rusb::DeviceDescriptor,
+) -> Option<String> {
+    let lang = handle
+        .read_languages(Duration::from_secs(1))
+        .ok()?
+        .first()
+        .copied()?;
+    handle
+        .read_serial_number_string(lang, desc, Duration::from_secs(1))
+        .ok()
+}
+
+/// A HackRF One seen on the USB bus (see [`devices`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HackrfDevice {
+    /// The radio's serial number, when it could be read.
+    pub serial: Option<String>,
+    /// Why the radio could not be opened (a missing WinUSB driver, udev rules),
+    /// when it could not.
+    pub error: Option<String>,
+}
+
+/// The HackRF Ones on the USB bus, without keeping any of them open: what the GUI
+/// shows before transmitting. A radio that is present but cannot be opened (no
+/// WinUSB driver on Windows, no udev rule on Linux) is listed with the reason.
+pub fn devices() -> Result<Vec<HackrfDevice>> {
+    let devices = rusb::devices()
+        .map_err(|e| StationError::Hackrf(format!("listing USB devices failed: {e}")))?;
+    let mut found = Vec::new();
+    for device in devices.iter() {
+        let Ok(desc) = device.device_descriptor() else {
+            continue;
+        };
+        if desc.vendor_id() != VENDOR_ID || desc.product_id() != PRODUCT_ID {
+            continue;
+        }
+        found.push(match device.open() {
+            Ok(handle) => HackrfDevice {
+                serial: read_serial(&handle, &desc),
+                error: None,
+            },
+            Err(e) => HackrfDevice {
+                serial: None,
+                error: Some(e.to_string()),
+            },
+        });
+    }
+    Ok(found)
 }
 
 /// Recipient device, vendor type, host-to-device: the request type of every
@@ -557,11 +601,10 @@ mod tests {
         let phase_inc = 2.0 * std::f64::consts::PI * if_offset / rate;
         let n = 20_000;
         let samples: Vec<f32> = (0..n)
-            .map(|k| {
+            .flat_map(|k| {
                 let a = 2.0 * std::f64::consts::PI * tone * k as f64 / rate;
                 [a.cos() as f32, a.sin() as f32]
             })
-            .flatten()
             .collect();
         let mut bytes = Vec::with_capacity(n * 2);
         let mut phase = 0.0;
