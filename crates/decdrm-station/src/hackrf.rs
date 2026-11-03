@@ -65,6 +65,10 @@ const POLL: Duration = Duration::from_millis(50);
 /// underrun: the radio's own buffer bridges shorter gaps.
 const UNDERRUN_GUARD: Duration = Duration::from_millis(100);
 
+/// Extra time `drain` allows on top of the queued signal's own length before it
+/// gives up on a radio that stopped taking data.
+const DRAIN_GRACE: Duration = Duration::from_secs(5);
+
 /// The most the station's queue may hold, bytes. `buffer_s` seconds at the sample
 /// rate would be 400 MB at 20 Msps with the longest setting; 64 MB is 16 s at
 /// 2 Msps and 1.6 s at 20 Msps, plenty of headroom either way.
@@ -255,15 +259,17 @@ impl HackrfSink {
     /// Let the last of the signal go out: push the resampler's tail through
     /// with silence, wait for the queue to drain, and switch the radio off.
     /// Skipped when `stop` is set (the station is being torn down): the writer
-    /// abandons the queue and switches the radio off at once.
-    pub fn drain(&mut self, stop: &StopHandle) {
+    /// abandons the queue and switches the radio off at once. An error the writer
+    /// met while flushing is returned, so a truncated tail is not reported as a
+    /// clean end.
+    pub fn drain(&mut self, stop: &StopHandle) -> Result<()> {
         let mut s = self.sync.state.lock().expect("the queue lock");
         if stop.is_stopped() {
             s.abandon = true;
             self.sync.data.notify_all();
             drop(s);
             self.join();
-            return;
+            return Ok(());
         }
         // The resampler's tail and enough silence to push it (and whatever the
         // radio still holds) through: the writer paces them out at real time.
@@ -278,12 +284,31 @@ impl HackrfSink {
         silence.clear();
         s.finishing = true;
         self.sync.data.notify_all();
+        // The writer takes the queue at the radio's rate, so the drain takes about
+        // as long as what is queued; a stall well past that (a wedged device) must
+        // not hang the station for ever.
+        let left_s = s.queue.len() as f64 / (f64::from(self.settings.sample_rate_hz) * 2.0);
+        let deadline = Instant::now() + Duration::from_secs_f64(left_s) + DRAIN_GRACE;
         while !(s.queue.is_empty() && s.finished) && s.error.is_none() {
+            if Instant::now() >= deadline {
+                s.abandon = true;
+                self.sync.data.notify_all();
+                drop(s);
+                self.join();
+                return Err(StationError::Hackrf(
+                    "the HackRF did not take the last of the signal".into(),
+                ));
+            }
             let (guard, _) = self.sync.room.wait_timeout(s, POLL).expect("the queue lock");
             s = guard;
         }
+        let error = s.error.clone();
         drop(s);
         self.join();
+        match error {
+            Some(e) => Err(StationError::Hackrf(e)),
+            None => Ok(()),
+        }
     }
 
     /// Wait for the writer thread to end and take it back.
@@ -345,8 +370,9 @@ fn writer_loop(
             }
             // Once transmitting, any block is taken; before that, the whole
             // prebuffer must be there (writing to the endpoint of an idle radio
-            // would block until the timeout).
-            if !s.queue.is_empty() && (started || s.queue.len() >= prebuffer_bytes) {
+            // would block until the timeout). Finishing bypasses the prebuffer: a
+            // transmission shorter than it must still flush its tail.
+            if ready_to_send(started, s.finishing, s.queue.len(), prebuffer_bytes) {
                 starving_since = None;
                 starving_counted = false;
                 break;
@@ -488,6 +514,15 @@ fn shift_and_convert(samples: &[f32], mixer: &mut Mixer, out: &mut Vec<u8>) {
         out.push(i as i8 as u8);
         out.push(q as i8 as u8);
     }
+}
+
+/// Whether the writer may take a block out of the queue: a transmitting radio takes
+/// whatever is there, a station that is finishing flushes its tail (even when the
+/// prebuffer was never reached — a short transmission must still go out), and a
+/// fresh radio waits for the whole prebuffer (writing to the endpoint of an idle
+/// radio would block until the timeout).
+fn ready_to_send(started: bool, finishing: bool, queued: usize, prebuffer_bytes: usize) -> bool {
+    queued > 0 && (started || finishing || queued >= prebuffer_bytes)
 }
 
 /// Track one episode of the queue running dry while transmitting: `true` once,
@@ -836,6 +871,20 @@ mod tests {
             200_000,
             "clamped to 0.05 s"
         );
+    }
+
+    /// The writer's decision: a fresh radio waits for the whole prebuffer, a
+    /// transmitting one takes any block, and a finishing one flushes its tail even
+    /// below the prebuffer (a short transmission must not stall in `drain`).
+    #[test]
+    fn ready_to_send_table() {
+        let pre = 4_000_000;
+        assert!(!ready_to_send(false, false, 0, pre), "nothing to send");
+        assert!(!ready_to_send(false, false, pre - 1, pre), "a fresh radio waits");
+        assert!(ready_to_send(false, false, pre, pre), "the prebuffer is there");
+        assert!(ready_to_send(true, false, 1, pre), "a transmitting radio takes any block");
+        assert!(ready_to_send(false, true, 1, pre), "finishing flushes the tail");
+        assert!(!ready_to_send(true, true, 0, pre), "nothing left to flush");
     }
 
     /// A dry queue counts as an underrun once, and only after the guard: the

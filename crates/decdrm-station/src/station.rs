@@ -617,7 +617,7 @@ impl Station {
         }
         #[cfg(feature = "hackrf")]
         if let Some(h) = self.hackrf.as_mut() {
-            h.drain(&self.stop);
+            h.drain(&self.stop)?;
         }
         self.update_status();
         Ok(self.status)

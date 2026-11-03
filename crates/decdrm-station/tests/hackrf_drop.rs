@@ -1,5 +1,7 @@
 //! Hardware test: a station dropped without `finish` must give the radio back.
 
+#![cfg(feature = "hackrf")]
+
 use decdrm_station::{Station, StationConfig};
 
 /// A tone service straight to a HackRF One.
