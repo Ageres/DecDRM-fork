@@ -373,7 +373,7 @@ impl TxSession {
         if due || stopped.is_some() {
             let snap = w.snapshot();
             if snap.seq != self.snap.seq {
-                self.spectrum = SpectrumPlot::new(
+                let mut plot = SpectrumPlot::new(
                     &snap.spectrum_db,
                     0.0,
                     48_000.0,
@@ -381,6 +381,12 @@ impl TxSession {
                     snap.dc_hz,
                     snap.band_hz,
                 );
+                // A HackRF output puts the channel on a real frequency: the spectrum
+                // then shows it, with the DC carrier at the channel centre.
+                if let Some(h) = &snap.status.hackrf {
+                    plot = plot.on_air(h.frequency_hz as f64);
+                }
+                self.spectrum = plot;
                 changed = true;
             }
             self.snap = snap;

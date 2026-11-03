@@ -702,6 +702,10 @@ band above that); with a positive offset the span becomes 1.25 MHz … 6 GHz. Th
 frequency field is clamped to that span. `buffer_s` of signal is queued before the
 radio starts, so a burst of encoding delay does not leave a gap on air.
 
+With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
+axis reads `frequency (kHz on air)`, the DC carrier sits at the channel centre, and
+the hover label is in MHz.
+
 **Windows driver.** The HackRF needs a WinUSB-class driver; install it once with
 [Zadig](https://zadig.akeo.ie/) (choose *WinUSB* for the HackRF One). On Linux the
 [udev rules](https://github.com/greatscottgadgets/hackrf/tree/master/host/libhackrf)
