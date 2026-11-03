@@ -48,8 +48,8 @@ encoding) and libopus.
   over HTTP/HTTPS, MP3/AAC/Ogg/FLAC, its titles as text messages), WAV/FLAC or
   sound-card output (clock-drift compensated with a sound-card or stream input), a
   HackRF One output streaming over USB straight to the radio (its own libusb-level
-  protocol, no libhackrf needed), plus a channel
-  simulator (the DRM channel models 1–6, noise, frequency and clock offsets:
+  protocol, no libhackrf needed), plus a channel simulator (the DRM channel models
+  1–6, noise, frequency and clock offsets:
   `[simulate]` or `decdrm tx … --channel-model 3 --snr 18`) for testing receivers.
 - Desktop GUI (egui): spectrum, waterfall, constellations, audio spectrum, channel,
   impulse response, SNR per carrier, reception history, and two displays Dream lacks: a
@@ -94,21 +94,28 @@ encoding) and libopus.
 ## Building
 
 ```bash
-git clone --recursive https://github.com/CasualArclamp/DecDRM.git
-cd DecDRM
+git clone --recursive https://github.com/Ageres/DecDRM-fork.git
+cd DecDRM-fork
 cargo build --release
 ```
 
 Requirements: Rust 1.88 or newer (1.95 for the GUI), a C/C++ compiler (MSVC Build Tools
 on Windows, gcc on Linux) and CMake for the vendored codecs, and on Linux the ALSA
-development package (`libasound2-dev`).
+development package (`libasound2-dev`; `libudev-dev` for the HackRF output's libusb).
+
+The transmitter's HackRF One output needs the radio's USB driver: on Windows the WinUSB
+driver, installed once with [Zadig](https://zadig.akeo.ie/); on Linux the udev rule that
+ships with libhackrf (`SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50",
+ATTRS{idProduct}=="6089", MODE="0660", GROUP="plugdev"`), so that a normal user can open
+the radio (running as root also works).
 
 **Portable Windows executables**: `decdrm-gui.exe` and `decdrm.exe` that run on any
 64-bit Windows 10/11 with nothing installed (C runtime linked statically, DAC with its
-weights built in, about 320 MB each) are attached to the
-[releases](https://github.com/CasualArclamp/DecDRM/releases), or built into `exe\`
-with `powershell -ExecutionPolicy Bypass -File scripts\build-portable.ps1` (after
-`decdrm models download dac`).
+weights built in, about 320 MB each) are built into `exe\` with
+`powershell -ExecutionPolicy Bypass -File scripts\build-portable.ps1` (after
+`decdrm models download dac`). Prebuilt ones are attached to the upstream
+[releases](https://github.com/CasualArclamp/DecDRM/releases); they come from upstream
+and have no HackRF output, so build this fork's own to get it.
 
 ## Usage
 

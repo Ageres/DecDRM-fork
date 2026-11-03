@@ -2,7 +2,7 @@
 [channel]
 mode = "B"
 occupancy = 3          # 10 kHz
-msc_mode = "64-QAM"
+msc_mode = "16-QAM"
 protection_b = 1
 
 [time]
@@ -15,7 +15,7 @@ level_dbfs = -15
 frequency_hz = 1_530_000
 sample_rate_hz = 2_000_000
 if_offset_hz = 250_000
-tx_gain_db = 47
+tx_gain_db = 40
 amp_enable = true
 
 [[service]]
