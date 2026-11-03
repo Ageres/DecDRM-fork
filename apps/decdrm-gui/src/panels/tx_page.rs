@@ -220,6 +220,9 @@ impl TxPage {
             output: settings.tx_output,
             file: settings.tx_output_file.clone(),
             device: settings.tx_output_device.clone(),
+            hackrf_frequency_khz: settings.tx_hackrf_frequency_khz,
+            hackrf_gain_db: settings.tx_hackrf_gain_db,
+            hackrf_amp: settings.tx_hackrf_amp,
         }
     }
 
@@ -443,6 +446,7 @@ impl TxPage {
                 }
                 TxOutput::File => output_file_picker(ui, settings),
                 TxOutput::Device => output_device_picker(ui, settings, devices),
+                TxOutput::Hackrf => output_hackrf_picker(ui, settings),
             }
             ui.separator();
             ui.checkbox(&mut settings.tx_duration_enabled, "Stop after");
@@ -1045,6 +1049,28 @@ fn output_file_picker(ui: &mut Ui, settings: &mut Settings) {
             settings.tx_output_file = Some(path);
         }
     }
+}
+
+fn output_hackrf_picker(ui: &mut Ui, settings: &mut Settings) {
+    ui.add(
+        egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
+            .range(1_000.0..=6_000_000.0)
+            .speed(1.0)
+            .max_decimals(1)
+            .suffix(" kHz"),
+    )
+    .on_hover_text(
+        "Centre of the DRM channel on air (the rest of [output.hackrf] comes from the station file).",
+    );
+    ui.add(
+        egui::DragValue::new(&mut settings.tx_hackrf_gain_db)
+            .range(0..=47)
+            .speed(0.5)
+            .suffix(" dB"),
+    )
+    .on_hover_text("HackRF transmit VGA gain, 0–47 dB.");
+    ui.checkbox(&mut settings.tx_hackrf_amp, "RF amp")
+        .on_hover_text("The HackRF's 14 dB RF amplifier.");
 }
 
 fn output_device_picker(ui: &mut Ui, settings: &mut Settings, devices: &mut DeviceLists) {

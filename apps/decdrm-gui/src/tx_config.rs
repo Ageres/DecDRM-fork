@@ -5,7 +5,7 @@
 use crate::settings::TxOutput;
 use decdrm_core::params::ChannelLayout;
 use decdrm_core::tx::output::OutputFormat;
-use decdrm_station::{MultiplexPlan, StationConfig, StationError};
+use decdrm_station::{MultiplexPlan, SignalFormat, StationConfig, StationError};
 use std::path::{Path, PathBuf};
 
 /// The shipped example (`crates/decdrm-station/examples/station.toml`). Rust note:
@@ -48,6 +48,12 @@ pub struct Overrides {
     pub file: Option<PathBuf>,
     /// Sound card for [`TxOutput::Device`] (`None` = system default).
     pub device: Option<String>,
+    /// DRM channel centre for [`TxOutput::Hackrf`], kHz.
+    pub hackrf_frequency_khz: f64,
+    /// HackRF transmit VGA gain for [`TxOutput::Hackrf`], dB.
+    pub hackrf_gain_db: u32,
+    /// The HackRF's RF amplifier for [`TxOutput::Hackrf`].
+    pub hackrf_amp: bool,
 }
 
 /// Every problem an error describes: the configuration problems, else the message.
@@ -103,6 +109,18 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
         TxOutput::Device => {
             cfg.output.device = Some(ov.device.clone().unwrap_or_else(|| "default".into()));
             cfg.output.file = None;
+        }
+        TxOutput::Hackrf => {
+            // The HackRF output wants zero-IF complex baseband: it does the IF shift
+            // itself. The sample rate, IF, buffer and serial stay as the file has them.
+            cfg.output.format = SignalFormat::Iq;
+            cfg.output.iq_offset_hz = 0.0;
+            cfg.output.iq_swap = false;
+            let mut h = cfg.output.hackrf.clone().unwrap_or_default();
+            h.frequency_hz = (ov.hackrf_frequency_khz.max(0.0) * 1_000.0).round() as u64;
+            h.tx_gain_db = ov.hackrf_gain_db;
+            h.amp_enable = ov.hackrf_amp;
+            cfg.output.hackrf = Some(h);
         }
     }
     Ok(cfg)
@@ -272,6 +290,7 @@ mod tests {
             output: TxOutput::File,
             file: Some(dir.join("x.wav")),
             device: None,
+            ..Default::default()
         };
         let cfg = prepare(EXAMPLE_STATION, &dir, &file).unwrap();
         assert_eq!(
@@ -287,6 +306,7 @@ mod tests {
             output: TxOutput::Device,
             file: None,
             device: None,
+            ..Default::default()
         };
         let cfg = prepare(EXAMPLE_STATION, &dir, &device).unwrap();
         assert_eq!(cfg.output.device.as_deref(), Some("default"));
@@ -299,6 +319,28 @@ mod tests {
             start_check(&cfg, None, false).is_err(),
             "--no-audio forbids it"
         );
+
+        // The HackRF override: complex baseband at zero offset, the quick fields
+        // (frequency, gain, amp) on top of what the file has.
+        let hackrf = Overrides {
+            output: TxOutput::Hackrf,
+            file: None,
+            device: None,
+            hackrf_frequency_khz: 15_500.0,
+            hackrf_gain_db: 30,
+            hackrf_amp: true,
+        };
+        let cfg = prepare(EXAMPLE_STATION, &dir, &hackrf).unwrap();
+        assert_eq!(cfg.output.format, SignalFormat::Iq);
+        assert_eq!(cfg.output.iq_offset_hz, 0.0);
+        assert!(!cfg.output.iq_swap);
+        let h = cfg.output.hackrf.as_ref().expect("an output.hackrf");
+        assert_eq!(
+            (h.frequency_hz, h.tx_gain_db, h.amp_enable),
+            (15_500_000, 30, true)
+        );
+        assert_eq!(h.sample_rate_hz, 2_000_000, "the defaults fill the rest");
+        assert!(start_check(&cfg, None, true).is_ok(), "the radio needs no end");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -445,6 +445,7 @@ mod tests {
             output: TxOutput::File,
             file: Some(wav.clone()),
             device: None,
+            ..Default::default()
         };
         let (cfg, plan) = check(EXAMPLE_STATION, &dir, &ov).unwrap();
         let mut tx = TxSession::default();
@@ -473,6 +474,7 @@ mod tests {
             output: TxOutput::File,
             file: Some(wav.clone()),
             device: None,
+            ..Default::default()
         };
         let (cfg, plan) = check(EXAMPLE_STATION, &dir, &ov).unwrap();
         let mut tx = TxSession::default();
@@ -505,6 +507,7 @@ mod tests {
             output: TxOutput::File,
             file: Some(dir.join("jl.wav")),
             device: None,
+            ..Default::default()
         };
         let (cfg, plan) = check(EXAMPLE_STATION, &dir, &ov).unwrap();
         let mut tx = TxSession::default();

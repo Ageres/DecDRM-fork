@@ -252,8 +252,9 @@ impl Default for OutputSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct HackrfSettings {
-    /// Centre frequency of the DRM channel on air, Hz (e.g. 15_500_000 for the
-    /// 15.5 MHz short-wave broadcast band).
+    /// Centre frequency of the DRM channel on air, Hz. Defaults to 1_530_000 (a
+    /// medium-wave broadcast channel); e.g. 15_500_000 for the 15.5 MHz short-wave
+    /// broadcast band.
     pub frequency_hz: u64,
     /// HackRF sample rate, Hz. 2–20 MHz; the default of 2 MHz is plenty for a
     /// DRM channel (≤ 20 kHz wide).
@@ -278,7 +279,7 @@ pub struct HackrfSettings {
 impl Default for HackrfSettings {
     fn default() -> Self {
         Self {
-            frequency_hz: 15_500_000,
+            frequency_hz: 1_530_000,
             sample_rate_hz: 2_000_000,
             if_offset_hz: 250_000.0,
             tx_gain_db: 40,

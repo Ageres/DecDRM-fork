@@ -36,9 +36,10 @@ band_limit = true            # transmit channel filter against the OFDM side lob
 # Streams the signal to a HackRF over USB (no libhackrf needed, only its WinUSB driver).
 # Needs format = "iq" with iq_offset_hz = 0: the HackRF shifts the signal to its own IF
 # (if_offset_hz above the local oscillator), keeping the DRM channel clear of the radio's
-# DC spike. Example: the 15.5 MHz short-wave broadcast band.
+# DC spike. Example: a 1.53 MHz medium-wave channel (the default); 15_500_000 for the
+# 15.5 MHz short-wave broadcast band.
 # [output.hackrf]
-# frequency_hz = 15_500_000  # centre of the DRM channel on air, 1 MHz–6 GHz
+# frequency_hz = 1_530_000  # centre of the DRM channel on air, 1 MHz–6 GHz
 # sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel
 # if_offset_hz = 250_000    # IF within the HackRF's passband (0 = zero IF; the LO leaks there)
 # tx_gain_db = 40            # transmit VGA gain, 0–47 dB

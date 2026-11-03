@@ -611,13 +611,13 @@ fn hackrf_output() {
     let plan = cfg.validate().unwrap();
     assert!(plan.describe(&cfg).contains("hackrf"), "the plan names the output");
 
-    // The defaults: 15.5 MHz, 2 Msps, IF 250 kHz, LO 15.25 MHz.
+    // The defaults: 1.53 MHz, 2 Msps, IF 250 kHz, LO 1.28 MHz.
     let h = cfg.output.hackrf.clone().unwrap();
     assert_eq!(
         (h.frequency_hz, h.sample_rate_hz, h.if_offset_hz as u32, h.tx_gain_db),
-        (15_500_000, 2_000_000, 250_000, 40)
+        (1_530_000, 2_000_000, 250_000, 40)
     );
-    assert_eq!(h.lo_hz(), 15_250_000);
+    assert_eq!(h.lo_hz(), 1_280_000);
 
     // Real format, a non-zero I/Q offset and swapped channels are rejected.
     for (what, format, offset, swap) in [
