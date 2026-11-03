@@ -644,6 +644,8 @@ fn hackrf_output() {
         ("tx_gain_db", decdrm_station::HackrfSettings { tx_gain_db: 48, ..Default::default() }),
         ("if_offset_hz", decdrm_station::HackrfSettings { if_offset_hz: 10_000.0, ..Default::default() }),
         ("if_offset_hz", decdrm_station::HackrfSettings { if_offset_hz: 1_000_000.0, ..Default::default() }),
+        ("buffer_s", decdrm_station::HackrfSettings { buffer_s: 0.0, ..Default::default() }),
+        ("buffer_s", decdrm_station::HackrfSettings { buffer_s: 11.0, ..Default::default() }),
         // With a positive offset, the oscillator at 1.1 MHz - 250 kHz = 850 kHz is
         // below the radio's floor.
         (
@@ -662,6 +664,18 @@ fn hackrf_output() {
         cfg.output.hackrf = Some(h);
         let p = cfg.validate().unwrap_err().problems().to_vec();
         assert!(p.iter().any(|x| x.contains(what)), "{what}: {p:?}");
+    }
+
+    // The ends of the buffer range are fine.
+    for buffer_s in [0.05, 1.0, 10.0] {
+        let mut cfg = parse(&base());
+        cfg.output.file = None;
+        cfg.output.format = SignalFormat::Iq;
+        cfg.output.hackrf =
+            Some(decdrm_station::HackrfSettings { buffer_s, ..Default::default() });
+        if let Err(e) = cfg.validate() {
+            panic!("buffer_s {buffer_s} should validate: {:?}", e.problems());
+        }
     }
 
     // A negative offset moves the local oscillator above the channel: 1.1 MHz is

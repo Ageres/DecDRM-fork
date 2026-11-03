@@ -277,8 +277,8 @@ pub struct HackrfSettings {
     /// Serial number of the HackRF to use (any one if none).
     pub serial: Option<String>,
     /// Seconds of signal buffered in the station before the radio starts
-    /// transmitting (a smooth start without underruns). The queue is capped at
-    /// 64 MB, so a high sample rate shortens it.
+    /// transmitting (a smooth start without underruns), 0.05–10 s. The queue is
+    /// capped at 64 MB, so a high sample rate shortens it.
     pub buffer_s: f64,
 }
 

@@ -617,6 +617,9 @@ fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Prob
         if h.tx_gain_db > 47 {
             p.push(format!("hackrf: tx_gain_db {} is outside the HackRF's 0–47 dB range", h.tx_gain_db));
         }
+        if !(0.05..=10.0).contains(&h.buffer_s) {
+            p.push(format!("hackrf: buffer_s {} is outside 0.05-10 s", h.buffer_s));
+        }
         if h.if_offset_hz != 0.0 && h.if_offset_hz.abs() < 15_000.0 {
             p.push(format!(
                 "hackrf: if_offset_hz {} is smaller than 15 kHz — the DRM channel would sit on the HackRF's DC spike (0 skips the IF shift entirely)",
