@@ -1067,6 +1067,45 @@ fn output_hackrf_picker(
     settings: &mut Settings,
     scan: &mut Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
 ) {
+    /// Broadcast bands to start from (kHz): 70 kHz below each band's middle, 40 kHz
+    /// for the narrow 75 m and 15 m (70 would leave their band), and the
+    /// medium-wave channel the default was chosen for. The band's name.
+    const PRESETS: [(f64, &str); 15] = [
+        (1_530.0, "medium wave"),
+        (2_330.0, "120 m"),
+        (3_230.0, "90 m"),
+        (3_910.0, "75 m"),
+        (4_830.0, "60 m"),
+        (5_980.0, "49 m"),
+        (7_330.0, "41 m"),
+        (9_530.0, "31 m"),
+        (11_760.0, "25 m"),
+        (13_650.0, "22 m"),
+        (15_380.0, "19 m"),
+        (17_620.0, "16 m"),
+        (18_920.0, "15 m"),
+        (21_580.0, "13 m"),
+        (25_780.0, "11 m"),
+    ];
+    let current = PRESETS
+        .iter()
+        .find(|(khz, _)| (settings.tx_hackrf_frequency_khz - khz).abs() < 0.05)
+        .map(|(_, band)| *band);
+    egui::ComboBox::from_id_salt("tx_hackrf_preset")
+        .selected_text(current.unwrap_or("Band"))
+        .width(60.0)
+        .show_ui(ui, |ui| {
+            for (khz, band) in PRESETS {
+                let picked = current == Some(band);
+                if ui.selectable_label(picked, format!("{band} — {khz:.0} kHz")).clicked() {
+                    settings.tx_hackrf_frequency_khz = khz;
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "Broadcast bands, 70 kHz below each band's middle (40 kHz in the narrow 75 m and 15 m); drag the frequency for anything else.",
+        );
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
             .range(1_000.0..=6_000_000.0)
