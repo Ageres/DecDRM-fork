@@ -47,9 +47,9 @@ encoding) and libopus.
   from a file, a sound card, a test tone or an internet radio stream (Icecast/SHOUTCAST
   over HTTP/HTTPS, MP3/AAC/Ogg/FLAC, its titles as text messages), WAV/FLAC or
   sound-card output (clock-drift compensated with a sound-card or stream input), a
-  HackRF One output streaming over USB straight to the radio (its own libusb-level
-  protocol, no libhackrf needed), plus a channel simulator (the DRM channel models
-  1–6, noise, frequency and clock offsets:
+  HackRF One output streaming over USB straight to the radio (the radio's vendor USB
+  requests over libusb, no libhackrf needed), plus a channel simulator (the DRM channel
+  models 1–6, noise, frequency and clock offsets:
   `[simulate]` or `decdrm tx … --channel-model 3 --snr 18`) for testing receivers.
 - Desktop GUI (egui): spectrum, waterfall, constellations, audio spectrum, channel,
   impulse response, SNR per carrier, reception history, and two displays Dream lacks: a
@@ -103,12 +103,6 @@ Requirements: Rust 1.88 or newer (1.95 for the GUI), a C/C++ compiler (MSVC Buil
 on Windows, gcc on Linux) and CMake for the vendored codecs, and on Linux the ALSA
 development package (`libasound2-dev`; `libudev-dev` for the HackRF output's libusb).
 
-The transmitter's HackRF One output needs the radio's USB driver: on Windows the WinUSB
-driver, installed once with [Zadig](https://zadig.akeo.ie/); on Linux the udev rule that
-ships with libhackrf (`SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50",
-ATTRS{idProduct}=="6089", MODE="0660", GROUP="plugdev"`), so that a normal user can open
-the radio (running as root also works).
-
 **Portable Windows executables**: `decdrm-gui.exe` and `decdrm.exe` that run on any
 64-bit Windows 10/11 with nothing installed (C runtime linked statically, DAC with its
 weights built in, about 320 MB each) are built into `exe\` with
@@ -154,13 +148,25 @@ decdrm tx crates/decdrm-station/examples/station-tx-hack-rf-mayak.toml --duratio
 cargo run --release -p decdrm-gui -- recording.flac
 ```
 
+Korean Central Broadcasting (6140 kHz) sends EVS speech inside a data service. DecDRM
+recognises it and shows it as EVS audio, but does not decode it (see the
+[user guide](docs/USER_GUIDE.md#services-and-audio)).
+
 A station file with `[output.hackrf]` transmits straight through a HackRF One: keep to
 your licence for on-air use, and for tests feed a dummy load, a receiver's IF input or a
 loopback instead of an antenna.
 
-Korean Central Broadcasting (6140 kHz) sends EVS speech inside a data service. DecDRM
-recognises it and shows it as EVS audio, but does not decode it (see the
-[user guide](docs/USER_GUIDE.md#services-and-audio)).
+### Transmitting through a HackRF One
+
+`[output.hackrf]` streams the signal straight to the radio: the station's complex
+baseband is resampled to the radio's rate and shifted to an IF away from its DC spike,
+then sent over USB through libusb — no libhackrf and no sound card needed. The radio
+needs its USB driver: on Windows the WinUSB driver, installed once with
+[Zadig](https://zadig.akeo.ie/); on Linux the udev rule that ships with libhackrf
+(`SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="6089", MODE="0660",
+GROUP="plugdev"`), so that a normal user can open the radio (running as root also works).
+The [user guide](docs/USER_GUIDE.md#transmitting-through-a-hackrf-one) covers the
+settings and the test setup.
 
 DAC (optional, pulls in the candle ML library):
 
@@ -183,7 +189,7 @@ messages, data objects and log lines as events.
 | `decdrm-data` | Packet mode, MOT slideshow/website/EPG, Journaline, TPEG capture |
 | `decdrm-io` | WAV/FLAC, resampling, sound-card input/output, drift-compensated playback |
 | `decdrm-engine` | Receiver threads, sources, decoding pipelines, status snapshots, logging |
-| `decdrm-station` | Transmitter station: TOML configuration → multiplex → signal |
+| `decdrm-station` | Transmitter station: TOML configuration → multiplex → signal (file, sound card or HackRF) |
 | `decdrm-dac` | DAC neural codec (feature `dac`) |
 | `decdrm-schedule` | Broadcast schedules (EiBi CSV, Dream's `DRMSchedule.ini`): what is on the air now |
 | `decdrm-cli` | The `decdrm` command-line tool |
