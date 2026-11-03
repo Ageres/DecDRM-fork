@@ -361,8 +361,9 @@ pub enum TxOutput {
     File,
     /// Only to the sound card [`Settings::tx_output_device`].
     Device,
-    /// Only to a HackRF One, on [`Settings::tx_hackrf_frequency_khz`] (the rest of
-    /// `[output.hackrf]` comes from the station file when it has one).
+    /// Only to a HackRF One, on [`Settings::tx_hackrf_frequency_khz`] and
+    /// [`Settings::tx_hackrf_if_khz`] (the sample rate, buffer and serial come from
+    /// the station file when it has them).
     Hackrf,
 }
 
@@ -426,6 +427,10 @@ pub struct Settings {
     pub tx_output_device: Option<String>,
     /// Nominal frequency (the DC carrier) of the DRM channel for [`TxOutput::Hackrf`], kHz.
     pub tx_hackrf_frequency_khz: f64,
+    /// The HackRF IF for [`TxOutput::Hackrf`], kHz: the DRM channel is shifted this
+    /// far within the radio's passband (negative puts the local oscillator above the
+    /// channel). The transmit page offers -950..+950 kHz in 50 kHz steps.
+    pub tx_hackrf_if_khz: f64,
     /// HackRF transmit VGA gain, dB (0–47).
     pub tx_hackrf_gain_db: u32,
     /// The HackRF's 14 dB RF amplifier.
@@ -474,6 +479,7 @@ impl Default for Settings {
             tx_output_file: None,
             tx_output_device: None,
             tx_hackrf_frequency_khz: 1_530.0,
+            tx_hackrf_if_khz: -250.0,
             tx_hackrf_gain_db: 40,
             tx_hackrf_amp: false,
             tx_duration_enabled: true,
@@ -747,6 +753,7 @@ mod tests {
             tx_output_file: Some(PathBuf::from("out.wav")),
             tx_output_device: Some("CABLE-A Input".into()),
             tx_hackrf_frequency_khz: 1_530.0,
+            tx_hackrf_if_khz: -237.5,
             tx_hackrf_gain_db: 47,
             tx_hackrf_amp: true,
             tx_duration_enabled: false,

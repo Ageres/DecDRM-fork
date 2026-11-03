@@ -50,6 +50,8 @@ pub struct Overrides {
     pub device: Option<String>,
     /// Nominal frequency (the DC carrier) of the DRM channel for [`TxOutput::Hackrf`], kHz.
     pub hackrf_frequency_khz: f64,
+    /// HackRF IF for [`TxOutput::Hackrf`], kHz (`None` = as the station file has it).
+    pub hackrf_if_khz: Option<f64>,
     /// HackRF transmit VGA gain for [`TxOutput::Hackrf`], dB.
     pub hackrf_gain_db: u32,
     /// The HackRF's RF amplifier for [`TxOutput::Hackrf`].
@@ -122,6 +124,9 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             cfg.output.iq_swap = false;
             let mut h = cfg.output.hackrf.clone().unwrap_or_default();
             h.frequency_hz = (ov.hackrf_frequency_khz.max(0.0) * 1_000.0).round() as u64;
+            if let Some(khz) = ov.hackrf_if_khz {
+                h.if_offset_hz = khz * 1_000.0;
+            }
             h.tx_gain_db = ov.hackrf_gain_db;
             h.amp_enable = ov.hackrf_amp;
             cfg.output.hackrf = Some(h);
@@ -173,13 +178,18 @@ pub fn inputs_finite(cfg: &StationConfig) -> bool {
 }
 
 /// The `[output.hackrf]` values the HackRF mode's quick fields start from when the
-/// station file has them: the nominal frequency (kHz), the transmit gain (dB) and the
-/// RF amplifier. `None` when the file has no such section (or does not parse), so the
-/// fields keep whatever they had.
-pub fn hackrf_fields(text: &str) -> Option<(f64, u32, bool)> {
+/// station file has them: the nominal frequency (kHz), the IF (kHz), the transmit gain
+/// (dB) and the RF amplifier. `None` when the file has no such section (or does not
+/// parse), so the fields keep whatever they had.
+pub fn hackrf_fields(text: &str) -> Option<(f64, f64, u32, bool)> {
     let cfg = StationConfig::from_toml_str(text).ok()?;
     let h = cfg.output.hackrf?;
-    Some((h.frequency_hz as f64 / 1_000.0, h.tx_gain_db, h.amp_enable))
+    Some((
+        h.frequency_hz as f64 / 1_000.0,
+        h.if_offset_hz / 1_000.0,
+        h.tx_gain_db,
+        h.amp_enable,
+    ))
 }
 
 /// Why a checked configuration cannot be transmitted as it stands. `allow_device` is
@@ -276,9 +286,9 @@ mod tests {
     fn hackrf_fields_come_from_the_file() {
         let text = EXAMPLE_STATION.replace(
             "# [output.hackrf]",
-            "[output.hackrf]\nfrequency_hz = 26_070_000\ntx_gain_db = 30\namp_enable = true",
+            "[output.hackrf]\nfrequency_hz = 26_070_000\nif_offset_hz = 250_000.0\ntx_gain_db = 30\namp_enable = true",
         );
-        assert_eq!(hackrf_fields(&text), Some((26_070.0, 30, true)));
+        assert_eq!(hackrf_fields(&text), Some((26_070.0, 250.0, 30, true)));
         assert_eq!(
             hackrf_fields(EXAMPLE_STATION),
             None,
@@ -352,7 +362,7 @@ mod tests {
         );
 
         // The HackRF override: complex baseband at zero offset, the quick fields
-        // (frequency, gain, amp) on top of what the file has.
+        // (frequency, IF, gain, amp) on top of what the file has.
         let hackrf = Overrides {
             output: TxOutput::Hackrf,
             file: None,
@@ -360,6 +370,7 @@ mod tests {
             hackrf_frequency_khz: 15_500.0,
             hackrf_gain_db: 30,
             hackrf_amp: true,
+            ..Default::default()
         };
         let cfg = prepare(EXAMPLE_STATION, &dir, &hackrf).unwrap();
         assert_eq!(cfg.output.format, SignalFormat::Iq);
@@ -374,8 +385,18 @@ mod tests {
             (h.frequency_hz, h.tx_gain_db, h.amp_enable),
             (15_500_000, 30, true)
         );
+        assert_eq!(
+            h.if_offset_hz, -250_000.0,
+            "without an IF override the file's value stays (its default here)"
+        );
         assert_eq!(h.sample_rate_hz, 2_000_000, "the defaults fill the rest");
         assert!(start_check(&cfg, None, true).is_ok(), "the radio needs no end");
+
+        // The IF is a quick field too: the preset in the page wins over the file.
+        let hackrf_if = Overrides { hackrf_if_khz: Some(250.0), ..hackrf };
+        let cfg = prepare(EXAMPLE_STATION, &dir, &hackrf_if).unwrap();
+        let h = cfg.output.hackrf.as_ref().expect("an output.hackrf");
+        assert_eq!(h.if_offset_hz, 250_000.0);
 
         // "As configured" keeps a file and a sound card next to the radio.
         let text = EXAMPLE_STATION.replace(

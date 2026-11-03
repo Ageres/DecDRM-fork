@@ -794,3 +794,24 @@ fn hackrf_channel_stays_inside_the_radios_range() {
     );
     assert!(check(1_010_000).is_ok(), "1.01 MHz clears it");
 }
+
+/// Every step of the GUI's -950..+950 kHz IF preset grid is usable with a 20 kHz
+/// channel at 2 Msps and a channel frequency that keeps the oscillator in range.
+#[cfg(feature = "hackrf")]
+#[test]
+fn hackrf_if_preset_grid_validates() {
+    for if_khz in (-950..=950).step_by(50) {
+        let mut cfg = parse(&base());
+        cfg.output.file = None;
+        cfg.output.format = decdrm_station::SignalFormat::Iq;
+        cfg.channel.occupancy = 5;
+        cfg.output.hackrf = Some(decdrm_station::HackrfSettings {
+            frequency_hz: 100_000_000,
+            if_offset_hz: f64::from(if_khz) * 1_000.0,
+            ..Default::default()
+        });
+        if let Err(e) = cfg.validate() {
+            panic!("if_offset_hz {if_khz} kHz should validate: {:?}", e.problems());
+        }
+    }
+}

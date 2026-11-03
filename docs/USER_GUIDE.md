@@ -710,6 +710,15 @@ gaps on air, counted as *underruns* in the status — and can stop taking data, 
 the transmission with a write timeout. A higher rate buys nothing for a DRM channel; it
 only widens the passband. The plan printed by `decdrm tx --check` says so too.
 
+The GUI's HackRF mode offers **IF presets** from −950 to +950 kHz in 50 kHz steps:
+negative puts the local oscillator above the channel (the default −250 kHz), positive
+below; 0 is zero IF and puts the radio's DC spike on the channel. A preset that would
+push the local oscillator out of the radio's range at the current channel frequency is
+shown greyed out, with the frequency span it would need; a value from the station file
+that is not on the grid is kept and shown as it is. As with the frequency, gain and
+amplifier, the choice is an override — the station file's `if_offset_hz` still applies
+to `decdrm tx` and to "As configured".
+
 With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
 axis reads `frequency (kHz on air)`, the DC carrier sits at the nominal frequency, and
 the hover label is in MHz.

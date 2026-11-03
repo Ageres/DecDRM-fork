@@ -69,9 +69,6 @@ pub struct TxPage {
     dialog_armed: bool,
     /// The HackRF error the dialog shows, while it is open.
     error_dialog: Option<String>,
-    /// The IF the station file asks the radio for (the default until a check says
-    /// otherwise): with it, the frequency field's usable span follows.
-    hackrf_if_offset_hz: f64,
     /// The configuration also names a file or a sound card, which the HackRF choice
     /// leaves out ("As configured" keeps them).
     other_outputs: bool,
@@ -105,7 +102,6 @@ impl TxPage {
             hackrf_scan_wanted: false,
             dialog_armed: false,
             error_dialog: None,
-            hackrf_if_offset_hz: decdrm_station::HackrfSettings::default().if_offset_hz,
             other_outputs: false,
             last_output: None,
         };
@@ -252,6 +248,7 @@ impl TxPage {
             file: settings.tx_output_file.clone(),
             device: settings.tx_output_device.clone(),
             hackrf_frequency_khz: settings.tx_hackrf_frequency_khz,
+            hackrf_if_khz: Some(settings.tx_hackrf_if_khz),
             hackrf_gain_db: settings.tx_hackrf_gain_db,
             hackrf_amp: settings.tx_hackrf_amp,
         }
@@ -266,10 +263,6 @@ impl TxPage {
                 Ok((cfg, plan)) => {
                     // A modulator's multiplex comes with the MDI.
                     self.bar = plan.mdi.is_none().then(|| PlanBar::of(&cfg, &plan));
-                    // The radio's usable span depends on the IF the file asks for.
-                    if let Some(h) = &cfg.output.hackrf {
-                        self.hackrf_if_offset_hz = h.if_offset_hz;
-                    }
                     // Whether the *file* names a destination the HackRF choice leaves
                     // out (the prepared config has them cleared already).
                     self.other_outputs = StationConfig::from_toml_str(&self.text)
@@ -488,8 +481,9 @@ impl TxPage {
         if settings.tx_output != TxOutput::Hackrf {
             return;
         }
-        if let Some((khz, gain_db, amp)) = tx_config::hackrf_fields(&self.text) {
+        if let Some((khz, if_khz, gain_db, amp)) = tx_config::hackrf_fields(&self.text) {
             settings.tx_hackrf_frequency_khz = khz;
+            settings.tx_hackrf_if_khz = if_khz;
             settings.tx_hackrf_gain_db = gain_db;
             settings.tx_hackrf_amp = amp;
         }
@@ -612,7 +606,6 @@ impl TxPage {
                     &self.hackrf_scan,
                     self.hackrf_scan_rx.is_some(),
                     &mut self.hackrf_scan_wanted,
-                    self.hackrf_if_offset_hz,
                     self.other_outputs,
                 ),
             }
@@ -1243,7 +1236,6 @@ fn output_hackrf_picker(
     scan: &Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
     scanning: bool,
     scan_wanted: &mut bool,
-    if_offset_hz: f64,
     other_outputs: bool,
 ) {
     /// Broadcast bands to start from (kHz): a little below each band's middle, so the
@@ -1288,6 +1280,7 @@ fn output_hackrf_picker(
         );
     // The radio's span less the IF: the channel and the local oscillator must both
     // stay inside it (1 MHz … 6 GHz), so the field cannot leave it either.
+    let if_offset_hz = settings.tx_hackrf_if_khz * 1_000.0;
     let (min_hz, max_hz) = decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz);
     let (min_khz, max_khz) = (min_hz as f64 / 1_000.0, max_hz as f64 / 1_000.0);
     settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
@@ -1299,8 +1292,66 @@ fn output_hackrf_picker(
             .suffix(" kHz"),
     )
     .on_hover_text(format!(
-        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the file's if_offset_hz {if_offset_hz:.0}. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
+        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
     ));
+    // The IF presets: -950..+950 kHz in 50 kHz steps, 0 being zero IF. A choice that
+    // would push the local oscillator out of the radio's range at the current channel
+    // frequency is offered disabled, with the frequency span it would need.
+    const IF_STEP_KHZ: i32 = 50;
+    const IF_MAX_KHZ: i32 = 950;
+    let selected = if settings.tx_hackrf_if_khz == 0.0 {
+        "IF 0 kHz".to_string()
+    } else if (settings.tx_hackrf_if_khz.abs() <= f64::from(IF_MAX_KHZ))
+        && (settings.tx_hackrf_if_khz / f64::from(IF_STEP_KHZ)).fract() == 0.0
+    {
+        format!("IF {:+.0} kHz", settings.tx_hackrf_if_khz)
+    } else {
+        format!("IF {:+.1} kHz", settings.tx_hackrf_if_khz)
+    };
+    egui::ComboBox::from_id_salt("tx_hackrf_if")
+        .selected_text(selected)
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for step in -(IF_MAX_KHZ / IF_STEP_KHZ)..=(IF_MAX_KHZ / IF_STEP_KHZ) {
+                let khz = f64::from(step * IF_STEP_KHZ);
+                let (min_hz, max_hz) =
+                    decdrm_station::HackrfSettings::frequency_range_for(khz * 1_000.0);
+                let (min_khz, max_khz) = (min_hz as f64 / 1_000.0, max_hz as f64 / 1_000.0);
+                let fits = (min_khz..=max_khz).contains(&settings.tx_hackrf_frequency_khz);
+                let picked = (settings.tx_hackrf_if_khz - khz).abs() < 0.5;
+                let label = if step == 0 {
+                    "0 kHz — zero IF (the DC spike sits on the channel)".to_string()
+                } else {
+                    format!("{khz:+.0} kHz")
+                };
+                let hover = if !fits {
+                    format!(
+                        "Needs a channel frequency of {min_khz:.0}–{max_khz:.0} kHz to keep the local oscillator inside the radio's range."
+                    )
+                } else if step == 0 {
+                    "Zero IF: the radio's DC spike and LO leakage sit on the channel.".to_string()
+                } else {
+                    format!(
+                        "The local oscillator sits {:.0} kHz {} the channel.",
+                        khz.abs(),
+                        if khz < 0.0 { "above" } else { "below" }
+                    )
+                };
+                let response = ui.add_enabled(fits, egui::Button::selectable(picked, label));
+                let response = if fits {
+                    response.on_hover_text(hover)
+                } else {
+                    response.on_disabled_hover_text(hover)
+                };
+                if response.clicked() {
+                    settings.tx_hackrf_if_khz = khz;
+                }
+            }
+        })
+        .response
+        .on_hover_text(
+            "The IF the DRM channel is shifted to within the radio's passband: negative puts the local oscillator above the channel (the default -250 kHz), positive below. 0 is zero IF and puts the radio's DC spike on the channel. Presets from -950 to +950 kHz in 50 kHz steps; a value from the station file that is not on the grid is kept and shown as it is.",
+        );
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_gain_db)
             .range(0..=47)
@@ -1393,12 +1444,17 @@ mod tests {
         let mut settings = Settings { tx_output: TxOutput::Hackrf, ..Default::default() };
         let mut page = TxPage::new(&mut settings, PathBuf::from("."));
         page.text =
-            "[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency_hz = 26_070_000\ntx_gain_db = 30\namp_enable = true\n"
+            "[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency_hz = 26_070_000\nif_offset_hz = 250_000.0\ntx_gain_db = 30\namp_enable = true\n"
                 .into();
         page.seed_hackrf_fields(&mut settings);
         assert_eq!(
-            (settings.tx_hackrf_frequency_khz, settings.tx_hackrf_gain_db, settings.tx_hackrf_amp),
-            (26_070.0, 30, true)
+            (
+                settings.tx_hackrf_frequency_khz,
+                settings.tx_hackrf_if_khz,
+                settings.tx_hackrf_gain_db,
+                settings.tx_hackrf_amp
+            ),
+            (26_070.0, 250.0, 30, true)
         );
 
         // A file without the section leaves the fields as they are.
