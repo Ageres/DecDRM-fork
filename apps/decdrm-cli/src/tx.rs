@@ -114,7 +114,11 @@ pub fn run(a: TxArgs) -> Result<()> {
             _ if crate::interrupted() => break,
             _ => {}
         }
-        station.transmit_frame()?;
+        if let Err(e) = station.transmit_frame() {
+            // Complete the file and hand the radio back before reporting.
+            let _ = station.finish();
+            return Err(e.into());
+        }
         print_log(&mut station);
         let s = station.status();
         if a.status_every > 0.0 && s.seconds >= next_status {

@@ -136,6 +136,8 @@ pub(crate) struct HackrfSink {
     sync: Arc<Sync>,
     /// Resampling and the IF mixer, run by the station's thread.
     resampler: Resampler,
+    /// The resampler's output, reused between frames.
+    resampled: Vec<f32>,
     mixer: Mixer,
     prebuffer_bytes: usize,
     writer: Option<std::thread::JoinHandle<()>>,
@@ -175,6 +177,7 @@ impl HackrfSink {
             settings: settings.clone(),
             sync,
             resampler,
+            resampled: Vec::new(),
             mixer: Mixer::new(settings.if_offset_hz, f64::from(rate)),
             prebuffer_bytes,
             writer: Some(writer),
@@ -213,10 +216,12 @@ impl HackrfSink {
         }
         // 1–2: resample to the HackRF's rate, shift the spectrum to the IF and
         //      scale to 8-bit signed I/Q (see `shift_and_convert`).
-        let mut bytes = Vec::with_capacity(samples.len() / 48_000 * self.settings.sample_rate_hz as usize * 2);
-        let mut resampled = Vec::new();
-        self.resampler.process_into(samples, &mut resampled);
-        shift_and_convert(&resampled, &mut self.mixer, &mut bytes);
+        // The output is the input rate times the HackRF's, two bytes per frame.
+        let rate = self.settings.sample_rate_hz as usize;
+        let mut bytes = Vec::with_capacity(samples.len() * rate / 48_000 + 4 * 1024);
+        self.resampled.clear();
+        self.resampler.process_into(samples, &mut self.resampled);
+        shift_and_convert(&self.resampled, &mut self.mixer, &mut bytes);
         // 3. Hand them over, then wait for the headroom to free up.
         let mut s = self.sync.state.lock().expect("the queue lock");
         if let Some(e) = &s.error {
