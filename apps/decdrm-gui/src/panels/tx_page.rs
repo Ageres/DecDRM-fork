@@ -67,6 +67,9 @@ pub struct TxPage {
     /// The IF the station file asks the radio for (the default until a check says
     /// otherwise): with it, the frequency field's usable span follows.
     hackrf_if_offset_hz: f64,
+    /// The configuration also names a file or a sound card, which the HackRF choice
+    /// leaves out ("As configured" keeps them).
+    other_outputs: bool,
 }
 
 impl TxPage {
@@ -93,6 +96,7 @@ impl TxPage {
             dialog_armed: false,
             error_dialog: None,
             hackrf_if_offset_hz: decdrm_station::HackrfSettings::default().if_offset_hz,
+            other_outputs: false,
         };
         if let Some(path) = settings.station_config.clone()
             && let Err(e) = page.load(&path)
@@ -253,6 +257,10 @@ impl TxPage {
                     if let Some(h) = &cfg.output.hackrf {
                         self.hackrf_if_offset_hz = h.if_offset_hz;
                     }
+                    // Whether the *file* names a destination the HackRF choice leaves
+                    // out (the prepared config has them cleared already).
+                    self.other_outputs = StationConfig::from_toml_str(&self.text)
+                        .is_ok_and(|c| c.output.file.is_some() || c.output.device.is_some());
                     (
                         Checked::Ok {
                             plan: plan.describe(&cfg),
@@ -523,9 +531,13 @@ impl TxPage {
                 }
                 TxOutput::File => output_file_picker(ui, settings),
                 TxOutput::Device => output_device_picker(ui, settings, devices),
-                TxOutput::Hackrf => {
-                    output_hackrf_picker(ui, settings, &mut self.hackrf_scan, self.hackrf_if_offset_hz)
-                }
+                TxOutput::Hackrf => output_hackrf_picker(
+                    ui,
+                    settings,
+                    &mut self.hackrf_scan,
+                    self.hackrf_if_offset_hz,
+                    self.other_outputs,
+                ),
             }
             ui.separator();
             ui.checkbox(&mut settings.tx_duration_enabled, "Stop after");
@@ -1142,6 +1154,7 @@ fn output_hackrf_picker(
     settings: &mut Settings,
     scan: &mut Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
     if_offset_hz: f64,
+    other_outputs: bool,
 ) {
     /// Broadcast bands to start from (kHz): 70 kHz below each band's middle, 40 kHz
     /// for the narrow 75 m and 15 m (70 would leave their band), and the
@@ -1206,6 +1219,12 @@ fn output_hackrf_picker(
     .on_hover_text("HackRF transmit VGA gain, 0–47 dB.");
     ui.checkbox(&mut settings.tx_hackrf_amp, "RF amp")
         .on_hover_text("The HackRF's 14 dB RF amplifier.");
+    if other_outputs {
+        ui.label(RichText::new("file/sound card ignored").weak())
+            .on_hover_text(
+                "This mode transmits through the radio only. Choose \"As configured\" for simultaneous outputs.",
+            );
+    }
     ui.separator();
     if scan.is_none() {
         *scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));

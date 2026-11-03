@@ -111,6 +111,10 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             cfg.output.file = None;
         }
         TxOutput::Hackrf => {
+            // Only the radio, as with the File and Device choices: the station file
+            // may name a file or a sound card too ("As configured" keeps them).
+            cfg.output.file = None;
+            cfg.output.device = None;
             // The HackRF output wants zero-IF complex baseband: it does the IF shift
             // itself. The sample rate, IF, buffer and serial stay as the file has them.
             cfg.output.format = SignalFormat::Iq;
@@ -334,6 +338,10 @@ mod tests {
         assert_eq!(cfg.output.format, SignalFormat::Iq);
         assert_eq!(cfg.output.iq_offset_hz, 0.0);
         assert!(!cfg.output.iq_swap);
+        assert!(
+            cfg.output.file.is_none() && cfg.output.device.is_none(),
+            "the HackRF choice is the only output"
+        );
         let h = cfg.output.hackrf.as_ref().expect("an output.hackrf");
         assert_eq!(
             (h.frequency_hz, h.tx_gain_db, h.amp_enable),
@@ -341,6 +349,15 @@ mod tests {
         );
         assert_eq!(h.sample_rate_hz, 2_000_000, "the defaults fill the rest");
         assert!(start_check(&cfg, None, true).is_ok(), "the radio needs no end");
+
+        // "As configured" keeps a file and a sound card next to the radio.
+        let text = EXAMPLE_STATION.replace(
+            "sample_format = \"int16\"",
+            "sample_format = \"int16\"\ndevice = \"default\"",
+        );
+        let as_configured = Overrides { output: TxOutput::Config, ..Default::default() };
+        let cfg = prepare(&text, &dir, &as_configured).unwrap();
+        assert!(cfg.output.file.is_some() && cfg.output.device.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
