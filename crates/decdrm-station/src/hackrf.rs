@@ -136,8 +136,7 @@ pub(crate) struct HackrfSink {
     sync: Arc<Sync>,
     /// Resampling and the IF mixer, run by the station's thread.
     resampler: Resampler,
-    phase: f64,
-    phase_inc: f64,
+    mixer: Mixer,
     prebuffer_bytes: usize,
     writer: Option<std::thread::JoinHandle<()>>,
 }
@@ -176,8 +175,7 @@ impl HackrfSink {
             settings: settings.clone(),
             sync,
             resampler,
-            phase: 0.0,
-            phase_inc: 2.0 * std::f64::consts::PI * settings.if_offset_hz / f64::from(rate),
+            mixer: Mixer::new(settings.if_offset_hz, f64::from(rate)),
             prebuffer_bytes,
             writer: Some(writer),
         })
@@ -218,7 +216,7 @@ impl HackrfSink {
         let mut bytes = Vec::with_capacity(samples.len() / 48_000 * self.settings.sample_rate_hz as usize * 2);
         let mut resampled = Vec::new();
         self.resampler.process_into(samples, &mut resampled);
-        shift_and_convert(&resampled, &mut self.phase, self.phase_inc, &mut bytes);
+        shift_and_convert(&resampled, &mut self.mixer, &mut bytes);
         // 3. Hand them over, then wait for the headroom to free up.
         let mut s = self.sync.state.lock().expect("the queue lock");
         if let Some(e) = &s.error {
@@ -256,11 +254,11 @@ impl HackrfSink {
         // radio still holds) through: the writer paces them out at real time.
         let tail = self.resampler.flush();
         let mut converted = Vec::new();
-        shift_and_convert(&tail, &mut self.phase, self.phase_inc, &mut converted);
+        shift_and_convert(&tail, &mut self.mixer, &mut converted);
         s.queue.extend(converted);
         let mut silence = vec![0.0; self.prebuffer_bytes.min(BLOCK_BYTES * 64)];
         let mut converted = Vec::new();
-        shift_and_convert(&silence, &mut self.phase, self.phase_inc, &mut converted);
+        shift_and_convert(&silence, &mut self.mixer, &mut converted);
         s.queue.extend(converted);
         silence.clear();
         s.finishing = true;
@@ -412,24 +410,69 @@ fn stop_radio(handle: &mut rusb::DeviceHandle<rusb::GlobalContext>) {
     let _ = handle.release_interface(INTERFACE);
 }
 
-/// Shift the spectrum of interleaved I/Q samples up by `if_offset` (continuing
-/// the mixer from `phase`, which is advanced for the next call) and append them
-/// to `out` as 8-bit signed I/Q: the format of the HackRF's bulk endpoint.
-fn shift_and_convert(samples: &[f32], phase: &mut f64, phase_inc: f64, out: &mut Vec<u8>) {
-    let mut ph = *phase;
-    for frame in samples.as_chunks::<2>().0 {
-        let (i, q) = (f64::from(frame[0]), f64::from(frame[1]));
-        let (c, s) = (ph.cos(), ph.sin());
-        let (i, q) = (i * c - q * s, i * s + q * c);
-        let (i, q) = ((i * 127.0).round().clamp(-127.0, 127.0), (q * 127.0).round().clamp(-127.0, 127.0));
-        out.push(i as i8 as u8);
-        out.push(q as i8 as u8);
-        ph += phase_inc;
-        if ph >= 2.0 * std::f64::consts::PI {
-            ph -= 2.0 * std::f64::consts::PI;
+/// The IF mixer: rotates the baseband I/Q by the intermediate frequency, one
+/// complex multiply per sample (the step's trigonometry is computed once), with the
+/// phasor renormalized every few thousand samples so rounding cannot drift.
+struct Mixer {
+    /// The next sample's rotation: `(cos, sin)` of the accumulated phase.
+    cos: f64,
+    sin: f64,
+    /// One sample's rotation.
+    step_cos: f64,
+    step_sin: f64,
+    /// Samples since the phasor was last renormalized.
+    since_norm: u32,
+}
+
+/// Samples between the mixer's phasor renormalizations.
+const NORM_EVERY: u32 = 4096;
+
+impl Mixer {
+    /// A mixer that shifts by `if_offset_hz` at `rate_hz` (a negative offset shifts
+    /// the spectrum down).
+    fn new(if_offset_hz: f64, rate_hz: f64) -> Self {
+        let step = 2.0 * std::f64::consts::PI * if_offset_hz / rate_hz;
+        Self {
+            cos: 1.0,
+            sin: 0.0,
+            step_cos: step.cos(),
+            step_sin: step.sin(),
+            since_norm: 0,
         }
     }
-    *phase = ph;
+
+    /// The rotation for the next sample: identity first, like a phase started at zero.
+    fn next(&mut self) -> (f64, f64) {
+        let (cos, sin) = (self.cos, self.sin);
+        self.cos = cos * self.step_cos - sin * self.step_sin;
+        self.sin = sin * self.step_cos + cos * self.step_sin;
+        self.since_norm += 1;
+        if self.since_norm >= NORM_EVERY {
+            let magnitude = self.cos.hypot(self.sin);
+            self.cos /= magnitude;
+            self.sin /= magnitude;
+            self.since_norm = 0;
+        }
+        (cos, sin)
+    }
+}
+
+/// Shift the spectrum of interleaved I/Q samples by the mixer's offset and append
+/// them to `out` as 8-bit signed I/Q: the format of the HackRF's bulk endpoint.
+/// Full-scale input is clipped, not wrapped (a wrapped int8 would flip sign and
+/// splatter over the whole spectrum).
+fn shift_and_convert(samples: &[f32], mixer: &mut Mixer, out: &mut Vec<u8>) {
+    for frame in samples.as_chunks::<2>().0 {
+        let (cos, sin) = mixer.next();
+        let (i, q) = (f64::from(frame[0]), f64::from(frame[1]));
+        let (i, q) = (i * cos - q * sin, i * sin + q * cos);
+        let (i, q) = (
+            (i * 127.0).round().clamp(-127.0, 127.0),
+            (q * 127.0).round().clamp(-127.0, 127.0),
+        );
+        out.push(i as i8 as u8);
+        out.push(q as i8 as u8);
+    }
 }
 
 /// Track one episode of the queue running dry while transmitting: `true` once,
@@ -685,7 +728,6 @@ mod tests {
         // A 9.5 kHz tone in the (already resampled) baseband at 2 Msps, shifted
         // to +250 kHz: a 259.5 kHz tone at the HackRF's input.
         let (rate, tone, if_offset) = (2_000_000.0_f64, 9_500.0, 250_000.0);
-        let phase_inc = 2.0 * std::f64::consts::PI * if_offset / rate;
         let n = 20_000;
         let samples: Vec<f32> = (0..n)
             .flat_map(|k| {
@@ -694,8 +736,8 @@ mod tests {
             })
             .collect();
         let mut bytes = Vec::with_capacity(n * 2);
-        let mut phase = 0.0;
-        shift_and_convert(&samples, &mut phase, phase_inc, &mut bytes);
+        let mut mixer = Mixer::new(if_offset, rate);
+        shift_and_convert(&samples, &mut mixer, &mut bytes);
         assert_eq!(bytes.len(), n * 2);
         // The output frame k is 127·cos/sin of 2πk·(tone + if_offset)/rate;
         // 8-bit rounding allows 1/127 ≈ 0.008, the bound covers the f32 input.
@@ -704,9 +746,9 @@ mod tests {
             assert!((f64::from(bytes[2 * k] as i8) / 127.0 - a.cos()).abs() < 0.02, "I at {k}");
             assert!((f64::from(bytes[2 * k + 1] as i8) / 127.0 - a.sin()).abs() < 0.02, "Q at {k}");
         }
-        // The mixer continues across calls: the phase is kept, not reset.
+        // The mixer continues across calls: the rotation is kept, not reset.
         let mut more = Vec::new();
-        shift_and_convert(&samples[..2], &mut phase, phase_inc, &mut more);
+        shift_and_convert(&samples[..2], &mut mixer, &mut more);
         let a = 2.0 * std::f64::consts::PI * (tone + if_offset) * n as f64 / rate;
         assert!((f64::from(more[0] as i8) / 127.0 - a.cos()).abs() < 0.02, "continues");
     }
@@ -716,11 +758,29 @@ mod tests {
     #[test]
     fn shift_and_convert_clips() {
         let mut bytes = Vec::new();
-        let mut phase = 0.0;
-        shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut phase, 0.0, &mut bytes);
+        let mut mixer = Mixer::new(0.0, 48_000.0);
+        shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut mixer, &mut bytes);
         assert_eq!(bytes, [127, 127, 0x81 /* −127 */, 0]);
     }
 
+    /// The rotation stays on the unit circle over a long run: one multiply-add pair
+    /// per sample, renormalized so rounding cannot drift into gain or loss.
+    #[test]
+    fn mixer_stays_unit_and_advances() {
+        let rate = 2_000_000.0;
+        let offset = 250_000.0;
+        let mut mixer = Mixer::new(offset, rate);
+        let n = 1_000_000;
+        let mut last = (0.0, 0.0);
+        for _ in 0..n {
+            last = mixer.next();
+        }
+        assert!((last.0.hypot(last.1) - 1.0).abs() < 1e-9, "{last:?}");
+        // After n samples the phase is n steps on; the phasor matches cos/sin of it.
+        let phase = 2.0 * std::f64::consts::PI * offset * n as f64 / rate;
+        assert!((mixer.cos - phase.cos()).abs() < 1e-9);
+        assert!((mixer.sin - phase.sin()).abs() < 1e-9);
+    }
     /// The queue is `buffer_s` seconds of 8-bit I/Q, clamped and capped so a high
     /// sample rate with a long buffer cannot eat the memory.
     #[test]
