@@ -75,6 +75,9 @@ pub struct TxPage {
     /// The configuration also names a file or a sound card, which the HackRF choice
     /// leaves out ("As configured" keeps them).
     other_outputs: bool,
+    /// The output mode as last seen: choosing the radio (or opening a station while it
+    /// is chosen) takes the file's `[output.hackrf]` into the quick fields.
+    last_output: Option<TxOutput>,
 }
 
 impl TxPage {
@@ -104,6 +107,7 @@ impl TxPage {
             error_dialog: None,
             hackrf_if_offset_hz: decdrm_station::HackrfSettings::default().if_offset_hz,
             other_outputs: false,
+            last_output: None,
         };
         if let Some(path) = settings.station_config.clone()
             && let Err(e) = page.load(&path)
@@ -132,6 +136,7 @@ impl TxPage {
             Ok(()) => {
                 settings.station_config = Some(path.to_path_buf());
                 self.notice = None;
+                self.seed_hackrf_fields(settings);
             }
             Err(e) => self.notice = Some(format!("cannot open {}: {e}", path.display())),
         }
@@ -160,6 +165,7 @@ impl TxPage {
         self.checked = None;
         self.notice = None;
         settings.station_config = None;
+        self.seed_hackrf_fields(settings);
     }
 
     fn start_dir(&self) -> Option<PathBuf> {
@@ -475,6 +481,20 @@ impl TxPage {
         }
     }
 
+    /// Take the station file's `[output.hackrf]` into the quick fields, when the radio
+    /// is the chosen output: the file's frequency, gain and amplifier, until the fields
+    /// are edited.
+    fn seed_hackrf_fields(&mut self, settings: &mut Settings) {
+        if settings.tx_output != TxOutput::Hackrf {
+            return;
+        }
+        if let Some((khz, gain_db, amp)) = tx_config::hackrf_fields(&self.text) {
+            settings.tx_hackrf_frequency_khz = khz;
+            settings.tx_hackrf_gain_db = gain_db;
+            settings.tx_hackrf_amp = amp;
+        }
+    }
+
     fn form(&mut self, ui: &mut Ui, devices: &mut DeviceLists, levels: Vec<Option<(f32, f32)>>) {
         if self.doc.as_ref().is_none_or(|(text, _)| *text != self.text) {
             let parsed = self.text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string());
@@ -572,6 +592,14 @@ impl TxPage {
                 .on_hover_text(
                     "Where the signal goes; overrides [output] without changing the file.",
                 );
+            // Choosing the radio starts from the station file's own HackRF settings;
+            // the quick fields win from then on (and when another station is opened).
+            if self.last_output != Some(settings.tx_output) {
+                if self.last_output.is_some() {
+                    self.seed_hackrf_fields(settings);
+                }
+                self.last_output = Some(settings.tx_output);
+            }
             match settings.tx_output {
                 TxOutput::Config => {
                     ui.label(RichText::new("(the file's [output])").weak());
@@ -1269,7 +1297,7 @@ fn output_hackrf_picker(
             .suffix(" kHz"),
     )
     .on_hover_text(format!(
-        "Centre of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the file's if_offset_hz {if_offset_hz:.0} (the rest of [output.hackrf] comes from the station file)."
+        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the file's if_offset_hz {if_offset_hz:.0}. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
     ));
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_gain_db)
@@ -1349,5 +1377,39 @@ fn output_device_picker(ui: &mut Ui, settings: &mut Settings, devices: &mut Devi
         .clicked()
     {
         devices.refresh();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Choosing the radio takes the station file's [output.hackrf] into the quick
+    /// fields; a file without the section, or another output mode, leaves them alone.
+    #[test]
+    fn the_radio_mode_starts_from_the_files_fields() {
+        let mut settings = Settings { tx_output: TxOutput::Hackrf, ..Default::default() };
+        let mut page = TxPage::new(&mut settings, PathBuf::from("."));
+        page.text =
+            "[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency_hz = 26_070_000\ntx_gain_db = 30\namp_enable = true\n"
+                .into();
+        page.seed_hackrf_fields(&mut settings);
+        assert_eq!(
+            (settings.tx_hackrf_frequency_khz, settings.tx_hackrf_gain_db, settings.tx_hackrf_amp),
+            (26_070.0, 30, true)
+        );
+
+        // A file without the section leaves the fields as they are.
+        settings.tx_hackrf_frequency_khz = 9_530.0;
+        page.text = "[output]\nfile = \"out.wav\"\n".into();
+        page.seed_hackrf_fields(&mut settings);
+        assert_eq!(settings.tx_hackrf_frequency_khz, 9_530.0);
+
+        // Another output mode does not take the radio's values either.
+        settings.tx_output = TxOutput::File;
+        page.text =
+            "[output]\nformat = \"iq\"\n[output.hackrf]\nfrequency_hz = 26_070_000\n".into();
+        page.seed_hackrf_fields(&mut settings);
+        assert_eq!(settings.tx_hackrf_frequency_khz, 9_530.0);
     }
 }

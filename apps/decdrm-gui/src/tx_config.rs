@@ -172,6 +172,16 @@ pub fn inputs_finite(cfg: &StationConfig) -> bool {
     cfg.inputs_finite()
 }
 
+/// The `[output.hackrf]` values the HackRF mode's quick fields start from when the
+/// station file has them: the nominal frequency (kHz), the transmit gain (dB) and the
+/// RF amplifier. `None` when the file has no such section (or does not parse), so the
+/// fields keep whatever they had.
+pub fn hackrf_fields(text: &str) -> Option<(f64, u32, bool)> {
+    let cfg = StationConfig::from_toml_str(text).ok()?;
+    let h = cfg.output.hackrf?;
+    Some((h.frequency_hz as f64 / 1_000.0, h.tx_gain_db, h.amp_enable))
+}
+
 /// Why a checked configuration cannot be transmitted as it stands. `allow_device` is
 /// false when sound-card output is disabled for this run (`--no-audio`).
 pub fn start_check(
@@ -259,6 +269,23 @@ pub fn signal_band(layout: ChannelLayout, format: OutputFormat) -> (f64, (f64, f
 mod tests {
     use super::*;
     use decdrm_core::params::{RobustnessMode, SpectrumOccupancy};
+
+    /// The HackRF mode's quick fields start from the station file when it has the
+    /// section; without it (or with unparsable text) there is nothing to take.
+    #[test]
+    fn hackrf_fields_come_from_the_file() {
+        let text = EXAMPLE_STATION.replace(
+            "# [output.hackrf]",
+            "[output.hackrf]\nfrequency_hz = 26_070_000\ntx_gain_db = 30\namp_enable = true",
+        );
+        assert_eq!(hackrf_fields(&text), Some((26_070.0, 30, true)));
+        assert_eq!(
+            hackrf_fields(EXAMPLE_STATION),
+            None,
+            "the example's section is commented out"
+        );
+        assert_eq!(hackrf_fields("[output"), None, "unparsable text");
+    }
 
     /// A fresh example directory per test (tests run in parallel threads).
     fn example_dir_for_tests(test: &str) -> PathBuf {
