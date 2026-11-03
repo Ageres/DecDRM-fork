@@ -252,20 +252,23 @@ impl Default for OutputSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct HackrfSettings {
-    /// Centre frequency of the DRM channel on air, Hz. Defaults to 1_530_000 (a
-    /// medium-wave broadcast channel); e.g. 15_500_000 for the 15.5 MHz short-wave
-    /// broadcast band. The usable span is [`HackrfSettings::frequency_range`]: the
-    /// channel and the local oscillator must both stay inside
-    /// [`HackrfSettings::RANGE_HZ`].
+    /// Nominal frequency of the DRM channel on air, Hz: the position of the DC
+    /// carrier. Defaults to 1_530_000 (a medium-wave broadcast channel); e.g.
+    /// 15_500_000 for the 15.5 MHz short-wave broadcast band. The usable span is
+    /// [`HackrfSettings::frequency_range`]: the channel and the local oscillator must
+    /// both stay inside [`HackrfSettings::RANGE_HZ`]. The 18 and 20 kHz occupancies
+    /// are not symmetric about it: the signal spans about -4.6..+14.6 kHz, so its
+    /// centre of power is a few kHz higher.
     pub frequency_hz: u64,
     /// HackRF sample rate, Hz. 2–20 MHz; the default of 2 MHz is plenty for a
     /// DRM channel (≤ 20 kHz wide).
     pub sample_rate_hz: u32,
     /// Intermediate frequency the signal is shifted to within the HackRF's
-    /// passband, Hz. The local oscillator runs at `frequency_hz − if_offset_hz`,
+    /// passband, Hz. The local oscillator runs at `frequency_hz - if_offset_hz`,
     /// keeping the DRM channel clear of the HackRF's DC spike and LO leakage.
-    /// Default −250 kHz (the oscillator above the channel); |if_offset| plus half
-    /// the DRM channel (up to 10 kHz) must stay within half the sample rate.
+    /// Default -250 kHz (the oscillator above the channel); the offset plus the
+    /// channel's own span (up to 14.6 kHz above the DC carrier in the 18 and 20 kHz
+    /// occupancies) must stay within half the sample rate.
     pub if_offset_hz: f64,
     /// Transmit VGA gain, 0–47 dB (the final stage before the antenna).
     pub tx_gain_db: u32,
@@ -315,7 +318,7 @@ impl HackrfSettings {
         (lower as u64, (upper.max(lower)) as u64)
     }
 
-    /// The local-oscillator frequency: below the channel centre by the IF offset
+    /// The local-oscillator frequency: below the nominal frequency by the IF offset
     /// (above it when the offset is negative), kept within the radio's 1 MHz floor.
     pub fn lo_hz(&self) -> u64 {
         u64::try_from(self.lo_hz_unclamped()).unwrap_or(0).max(1_000_000)

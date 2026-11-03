@@ -677,14 +677,14 @@ the cable.
 over USB, on the radio's own clock — no libhackrf or sound card needed. The station's
 complex baseband is resampled to the HackRF's sample rate and shifted to an intermediate
 frequency inside its passband, so the DRM channel keeps clear of the radio's DC spike
-and LO leakage; the local oscillator runs at the channel centre less that IF.
+and LO leakage; the local oscillator runs at the nominal frequency less that IF.
 
 ```toml
 [output]
 format = "iq"        # required, with iq_offset_hz = 0: the HackRF does its own IF shift
 
 [output.hackrf]
-frequency_hz = 1_530_000   # centre of the DRM channel on air, 1 MHz–6 GHz
+frequency_hz = 1_530_000   # nominal frequency of the channel (the DC carrier), 1 MHz–6 GHz
 sample_rate_hz = 2_000_000 # 2–20 MHz; 2 MHz is plenty for a DRM channel
 if_offset_hz = -250_000   # IF within the passband; negative puts the LO above the channel
 tx_gain_db = 40            # transmit VGA gain, 0–47 dB
@@ -704,8 +704,18 @@ radio starts, so a burst of encoding delay does not leave a gap on air; the queu
 capped at 64 MB, so a high sample rate shortens it.
 
 With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
-axis reads `frequency (kHz on air)`, the DC carrier sits at the channel centre, and
+axis reads `frequency (kHz on air)`, the DC carrier sits at the nominal frequency, and
 the hover label is in MHz.
+
+**Where the channel sits.** `frequency_hz` is the channel's *nominal* frequency: the
+position of the DC carrier. The 9 and 10 kHz occupancies use carriers symmetric about
+it, but the others do not: 4.5 and 5 kHz use the upper sideband only, and 18 and 20 kHz
+extend upwards from it. A 20 kHz signal in mode A therefore spans `frequency_hz`
+−4.58 kHz … +14.58 kHz (18 kHz: −4.08 … +13.08; mode B differs by less than 100 Hz), so
+the band's centre lies about 5 kHz (4.5 kHz) above the nominal frequency. That is the
+DRM spectrum table (ES 201 980 §8.1, table 84), not a tuning error: receivers lock onto
+the DC carrier, and the occupied band is 19.2 kHz (17.2 kHz) wide. The GUI's Output card
+lists the actual band next to the nominal frequency.
 
 **Windows driver.** The HackRF needs a WinUSB-class driver; install it once with
 [Zadig](https://zadig.akeo.ie/) (choose *WinUSB* for the HackRF One). On Linux the

@@ -842,8 +842,18 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
         ui.add_space(2.0);
         egui::Grid::new("tx_output_status").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
             if let Some(h) = &s.hackrf {
-                value(ui, "HackRF", format!("{:.4} MHz", h.frequency_hz as f64 / 1e6))
-                    .on_hover_text("The DRM channel's centre on air.");
+                value(ui, "HackRF", format!("{:.4} MHz", h.frequency_hz as f64 / 1e6)).on_hover_text(
+                    "The DRM channel's nominal frequency: the DC carrier. The 18 and 20 kHz occupancies are not symmetric about it (see Band).",
+                );
+                ui.end_row();
+                value(
+                    ui,
+                    "Band",
+                    format!("{:.1}..{:.1} kHz", h.band_lo_hz / 1e3, h.band_hi_hz / 1e3),
+                )
+                .on_hover_text(
+                    "The occupied spectrum, lowest to highest carrier. The 9 and 10 kHz occupancies are centred on the nominal frequency, but 18 and 20 kHz extend upwards: a 20 kHz mode A signal reaches +14.58 kHz and only -4.58 kHz, so its centre sits 5 kHz high (18 kHz: +13.08 and -4.08, 4.5 kHz high). That is the DRM spectrum table, not a tuning error.",
+                );
                 ui.end_row();
                 value(
                     ui,

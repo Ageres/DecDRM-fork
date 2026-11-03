@@ -174,7 +174,9 @@ needs its USB driver: on Windows the WinUSB driver, installed once with
 MODE="0660", GROUP="plugdev"`), so that a normal user can open the radio (running as root
 also works).
 The [user guide](docs/USER_GUIDE.md#transmitting-through-a-hackrf-one) covers the
-settings and the test setup.
+settings and the test setup. Note that `frequency_hz` is the channel's nominal
+frequency (the DC carrier): the 18 and 20 kHz occupancies extend upwards from it rather
+than symmetrically around it, so their occupied band's centre sits 4.5–5 kHz higher.
 
 DAC (optional, pulls in the candle ML library):
 

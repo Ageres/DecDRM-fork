@@ -100,6 +100,11 @@ pub fn run(a: TxArgs) -> Result<()> {
             h.tx_gain_db,
             if h.amp { ", RF amp on" } else { "" }
         );
+        println!(
+            "        occupied band: {:.1}..{:.1} kHz",
+            h.band_lo_hz / 1e3,
+            h.band_hi_hz / 1e3
+        );
     }
     // The inputs' log: web stream connections, titles, reconnections.
     let print_log = |station: &mut Station| station.take_log().iter().for_each(|line| println!("{line}"));

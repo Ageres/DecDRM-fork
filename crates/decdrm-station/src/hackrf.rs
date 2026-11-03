@@ -80,9 +80,13 @@ fn prebuffer_bytes(settings: &HackrfSettings) -> usize {
 /// Settings that describe the radio on air, for [`crate::StationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HackrfStatus {
-    /// Centre of the DRM channel on air, Hz.
+    /// Nominal frequency of the DRM channel on air, Hz: the DC carrier.
     pub frequency_hz: u64,
-    /// Local-oscillator frequency, Hz (the channel centre less the IF offset).
+    /// Lowest and highest carrier of the signal on air, Hz. The 18 and 20 kHz
+    /// occupancies reach well above `frequency_hz` and only a little below it.
+    pub band_lo_hz: f64,
+    pub band_hi_hz: f64,
+    /// Local-oscillator frequency, Hz (the nominal frequency less the IF offset).
     pub lo_hz: u64,
     /// HackRF sample rate, Hz.
     pub sample_rate_hz: u32,

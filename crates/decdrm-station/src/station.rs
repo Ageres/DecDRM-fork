@@ -676,8 +676,11 @@ impl Station {
         st.device_buffer_ms = self.device.as_ref().map(|d| d.queued().as_secs_f64() * 1000.0);
         #[cfg(feature = "hackrf")]
         {
+            let (band_lo, band_hi) = decdrm_core::tx::output::carrier_span_hz(self.plan.layout);
             st.hackrf = self.hackrf.as_ref().map(|h| crate::hackrf::HackrfStatus {
                 frequency_hz: h.settings().frequency_hz,
+                band_lo_hz: h.settings().frequency_hz as f64 + band_lo,
+                band_hi_hz: h.settings().frequency_hz as f64 + band_hi,
                 lo_hz: h.settings().lo_hz(),
                 sample_rate_hz: h.settings().sample_rate_hz,
                 if_offset_hz: h.settings().if_offset_hz,
