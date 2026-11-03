@@ -151,6 +151,10 @@ decdrm tx crates/decdrm-station/examples/station.toml --duration 30 --output drm
 cargo run --release -p decdrm-gui -- recording.flac
 ```
 
+A station file with `[output.hackrf]` transmits straight through a HackRF One: keep to
+your licence for on-air use, and for tests feed a dummy load, a receiver's IF input or a
+loopback instead of an antenna.
+
 Korean Central Broadcasting (6140 kHz) sends EVS speech inside a data service. DecDRM
 recognises it and shows it as EVS audio, but does not decode it (see the
 [user guide](docs/USER_GUIDE.md#services-and-audio)).
@@ -190,5 +194,8 @@ encoder) is Apache-2.0, which is compatible with GPLv3 but not GPLv2, so binarie
 include it are distributed under GPL-3.0; its LICENSE and NOTICE must ship with them.
 The vendored FDK-AAC library has its own licence (see `third_party/fdk-aac/NOTICE`),
 which is generally regarded as incompatible with the GPL: fine for personal use, but
-check before distributing binaries. AAC, xHE-AAC (MPEG-D USAC) and DRM technologies are
-covered by patents licensed through Via LA.
+check before distributing binaries. The HackRF One output links libusb (LGPL-2.1,
+through the `rusb` crate) statically: the LGPL allows that from GPL code, provided that
+whoever receives a binary can relink the library — ship the object files, or the
+library's sources and the scripts that build them. AAC, xHE-AAC (MPEG-D USAC) and DRM
+technologies are covered by patents licensed through Via LA.
