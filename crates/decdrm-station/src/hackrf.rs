@@ -230,8 +230,14 @@ impl HackrfSink {
         s.queue.extend(bytes);
         self.sync.data.notify_all();
         while s.queue.len() > self.prebuffer_bytes {
-            if stop.is_stopped() || s.error.is_some() || s.finished {
-                return if let Some(e) = s.error.clone() { Err(StationError::Hackrf(e)) } else { Ok(()) };
+            if let Some(e) = &s.error {
+                return Err(StationError::Hackrf(e.clone()));
+            }
+            if stop.is_stopped() {
+                return Ok(());
+            }
+            if s.finished {
+                return Err(StationError::Hackrf("the HackRF writer has stopped".into()));
             }
             let (guard, _) = self.sync.room.wait_timeout(s, POLL).expect("the queue lock");
             s = guard;
