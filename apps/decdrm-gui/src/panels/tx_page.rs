@@ -57,9 +57,14 @@ pub struct TxPage {
     bar: Option<PlanBar>,
     /// Check again at this time (after form edits settle).
     recheck_at: Option<Instant>,
-    /// The HackRF Ones on the USB bus, scanned when the output mode first asks
-    /// (`None` until then) or by the button; an error is the enumeration's.
+    /// The HackRF Ones on the USB bus, scanned off the UI thread (`None` until a
+    /// scan finishes); an error is the enumeration's.
     hackrf_scan: Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+    /// The scan in flight, whose outcome lands in `hackrf_scan`.
+    hackrf_scan_rx: Option<std::sync::mpsc::Receiver<Result<Vec<decdrm_station::HackrfDevice>, String>>>,
+    /// A scan was asked for (the mode's first show, the button, the dialog): started
+    /// after the panels are drawn.
+    hackrf_scan_wanted: bool,
     /// A start was requested: a failure to reach the HackRF should open the dialog.
     dialog_armed: bool,
     /// The HackRF error the dialog shows, while it is open.
@@ -93,6 +98,8 @@ impl TxPage {
             bar: None,
             recheck_at: None,
             hackrf_scan: None,
+            hackrf_scan_rx: None,
+            hackrf_scan_wanted: false,
             dialog_armed: false,
             error_dialog: None,
             hackrf_if_offset_hz: decdrm_station::HackrfSettings::default().if_offset_hz,
@@ -327,6 +334,7 @@ impl TxPage {
         tx: &mut TxSession,
         allow_device: bool,
     ) {
+        self.poll_hackrf_scan(ui.ctx());
         egui::Panel::top("tx_toolbar").show(ui, |ui| {
             self.toolbar(ui, settings, devices);
         });
@@ -417,13 +425,52 @@ impl TxPage {
                     });
                 });
             if scan {
-                self.hackrf_scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+                self.hackrf_scan_wanted = true;
             }
             if retry {
                 self.error_dialog = None;
                 self.transmit(settings, tx, allow_device);
             } else if close || !open {
                 self.error_dialog = None;
+            }
+        }
+        if self.hackrf_scan_wanted {
+            self.hackrf_scan_wanted = false;
+            self.start_hackrf_scan();
+        }
+        if self.hackrf_scan_rx.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Look for HackRFs on a helper thread: the USB scan takes long enough to be felt.
+    fn start_hackrf_scan(&mut self) {
+        if self.hackrf_scan_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+        });
+        self.hackrf_scan_rx = Some(rx);
+    }
+
+    /// Take the scan's outcome if it has arrived, and keep repainting while it runs.
+    fn poll_hackrf_scan(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.hackrf_scan_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.hackrf_scan = Some(outcome);
+                self.hackrf_scan_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.hackrf_scan = Some(Err("the USB scan thread ended".into()));
+                self.hackrf_scan_rx = None;
             }
         }
     }
@@ -534,7 +581,9 @@ impl TxPage {
                 TxOutput::Hackrf => output_hackrf_picker(
                     ui,
                     settings,
-                    &mut self.hackrf_scan,
+                    &self.hackrf_scan,
+                    self.hackrf_scan_rx.is_some(),
+                    &mut self.hackrf_scan_wanted,
                     self.hackrf_if_offset_hz,
                     self.other_outputs,
                 ),
@@ -1152,7 +1201,9 @@ fn output_file_picker(ui: &mut Ui, settings: &mut Settings) {
 fn output_hackrf_picker(
     ui: &mut Ui,
     settings: &mut Settings,
-    scan: &mut Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+    scan: &Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+    scanning: bool,
+    scan_wanted: &mut bool,
     if_offset_hz: f64,
     other_outputs: bool,
 ) {
@@ -1226,15 +1277,18 @@ fn output_hackrf_picker(
             );
     }
     ui.separator();
-    if scan.is_none() {
-        *scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+    if scan.is_none() && !scanning {
+        *scan_wanted = true;
     }
     if ui
         .small_button("Scan")
         .on_hover_text("Look for HackRF Ones on the USB bus again")
         .clicked()
     {
-        *scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+        *scan_wanted = true;
+    }
+    if scanning {
+        ui.label(RichText::new("scanning…").weak());
     }
     let driver_hint = "Windows: the radio needs its WinUSB driver (Zadig); Linux: libhackrf's udev rule, or run as root.";
     match scan {
