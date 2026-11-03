@@ -2,7 +2,7 @@
 [channel]
 mode = "B"
 occupancy = 3          # 10 kHz
-msc_mode = "16-QAM"
+msc_mode = "64-QAM"
 protection_b = 1
 
 [time]
