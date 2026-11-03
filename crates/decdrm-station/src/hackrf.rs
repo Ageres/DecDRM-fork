@@ -269,6 +269,24 @@ impl HackrfSink {
     }
 }
 
+impl Drop for HackrfSink {
+    /// A station dropped without `finish` (a panic, an early error) must not leave
+    /// the writer thread holding the radio — the next start would find it busy. The
+    /// writer switches the radio off and exits; `drain` has already joined when the
+    /// station finished normally, so this is then a no-op. (A write already in
+    /// flight ends by its USB timeout, so a drop can take that long in the worst case.)
+    fn drop(&mut self) {
+        if self.writer.is_none() {
+            return;
+        }
+        if let Ok(mut s) = self.sync.state.lock() {
+            s.abandon = true;
+            self.sync.data.notify_all();
+        }
+        self.join();
+    }
+}
+
 /// The writer thread: keeps the radio fed, block by block, so it never
 /// underruns between the station's frames. Starts transmitting once
 /// `prebuffer_bytes` of signal is queued; sets the radio off at the end
