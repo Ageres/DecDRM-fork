@@ -509,10 +509,14 @@ fn starvation_episode(
 }
 
 /// Find the HackRF with this serial (or the first one) and open it.
+///
+/// A radio that cannot be opened (busy, no driver) does not hide the others: the
+/// first one that opens is used, and its error is only reported when nothing opens.
 fn open_device(serial: Option<&str>) -> Result<rusb::DeviceHandle<rusb::GlobalContext>> {
     let devices = rusb::devices()
         .map_err(|e| StationError::Hackrf(format!("listing USB devices failed: {e}")))?;
     let mut found = Vec::new();
+    let mut unopenable: Vec<String> = Vec::new();
     for device in devices.iter() {
         let Ok(desc) = device.device_descriptor() else {
             continue;
@@ -525,24 +529,34 @@ fn open_device(serial: Option<&str>) -> Result<rusb::DeviceHandle<rusb::GlobalCo
                 let sn = read_serial(&handle, &desc).unwrap_or_default();
                 found.push((handle, sn));
             }
-            Err(e) => {
-                return Err(StationError::Hackrf(format!(
-                    "the HackRF was found but could not be opened ({}). On Windows, install the HackRF's WinUSB driver (Zadig); on Linux, check the udev rules or run as root.",
-                    e
-                )));
-            }
+            Err(e) => unopenable.push(format!(
+                "a HackRF could not be opened ({e}); on Windows install its WinUSB driver (Zadig), on Linux check the udev rules or run as root"
+            )),
         }
     }
-    match (serial, found.is_empty()) {
-        (_, true) => Err(StationError::Hackrf(
-            "no HackRF One found (USB id 1d50:6089). Check that it is connected and not in use by another program.".into(),
-        )),
-        (None, false) => Ok(found.into_iter().next().expect("checked").0),
-        (Some(serial), false) => found
-            .into_iter()
-            .find(|(_, sn)| sn == serial)
-            .map(|(handle, _)| handle)
-            .ok_or_else(|| StationError::Hackrf(format!("no HackRF with serial number \"{serial}\""))),
+    let answered = found.len();
+    let reject = |what: String| {
+        let mut message = what;
+        if let Some(first) = unopenable.first() {
+            message.push_str(". ");
+            message.push_str(first);
+        }
+        StationError::Hackrf(message)
+    };
+    match serial {
+        Some(serial) => match found.into_iter().find(|(_, sn)| sn == serial) {
+            Some((handle, _)) => Ok(handle),
+            None => Err(reject(format!(
+                "no HackRF with serial number \"{serial}\" ({answered} other HackRF(s) answered)"
+            ))),
+        },
+        None => match answered {
+            0 if unopenable.is_empty() => Err(StationError::Hackrf(
+                "no HackRF One found (USB id 1d50:6089). Check that it is connected and not in use by another program.".into(),
+            )),
+            0 => Err(reject("a HackRF One is connected but could not be opened".into())),
+            _ => Ok(found.into_iter().next().expect("checked").0),
+        },
     }
 }
 
