@@ -697,6 +697,41 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
         });
         ui.add_space(2.0);
         egui::Grid::new("tx_output_status").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+            if let Some(h) = &s.hackrf {
+                value(ui, "HackRF", format!("{:.4} MHz", h.frequency_hz as f64 / 1e6))
+                    .on_hover_text("The DRM channel's centre on air.");
+                ui.end_row();
+                value(
+                    ui,
+                    "Local osc",
+                    format!("{:.4} MHz {:+.0} kHz IF", h.lo_hz as f64 / 1e6, h.if_offset_hz / 1e3),
+                )
+                .on_hover_text(
+                    "The local oscillator sits below the channel centre by the IF, clear of the radio's DC spike.",
+                );
+                ui.end_row();
+                value(
+                    ui,
+                    "Sample rate",
+                    format!(
+                        "{} Msps, TX gain {} dB{}",
+                        h.sample_rate_hz as f64 / 1e6,
+                        h.tx_gain_db,
+                        if h.amp { " + RF amp" } else { "" }
+                    ),
+                );
+                ui.end_row();
+                value(ui, "Sent", format!("{:.1} s", h.transmitted_s))
+                    .on_hover_text("Signal handed to the radio since it started transmitting.");
+                ui.end_row();
+                let queued = RichText::new(format!("{:.1} s", h.queued_s)).monospace();
+                ui.label(RichText::new("Buffered").weak());
+                ui.label(if h.queued_s < 0.2 { queued.color(pal.error) } else { queued })
+                    .on_hover_text(
+                        "Signal held in the station as headroom; it should stay near `buffer_s`. Near zero risks an underrun.",
+                    );
+                ui.end_row();
+            }
             if let Some(dev) = &s.device {
                 value(ui, "Sound card", dev.as_str());
                 ui.end_row();
