@@ -60,6 +60,10 @@ pub struct TxPage {
     /// The HackRF Ones on the USB bus, scanned when the output mode first asks
     /// (`None` until then) or by the button; an error is the enumeration's.
     hackrf_scan: Option<Result<Vec<decdrm_station::HackrfDevice>, String>>,
+    /// A start was requested: a failure to reach the HackRF should open the dialog.
+    dialog_armed: bool,
+    /// The HackRF error the dialog shows, while it is open.
+    error_dialog: Option<String>,
 }
 
 impl TxPage {
@@ -83,6 +87,8 @@ impl TxPage {
             bar: None,
             recheck_at: None,
             hackrf_scan: None,
+            dialog_armed: false,
+            error_dialog: None,
         };
         if let Some(path) = settings.station_config.clone()
             && let Err(e) = page.load(&path)
@@ -293,6 +299,7 @@ impl TxPage {
         } else {
             ""
         };
+        self.dialog_armed = true;
         tx.start(cfg, plan, frames, format!("{name}{unsaved}"));
     }
 
@@ -345,6 +352,64 @@ impl TxPage {
                 View::Toml => self.editor(ui),
             }
         });
+        // A failed start through the HackRF opens a dialog with the reason and a
+        // Retry: the radio usually just needs its driver, or another program to
+        // let go of it. Armed by `transmit`, disarmed once transmitting or failed.
+        if self.dialog_armed {
+            if let Some(e) = &tx.error {
+                self.dialog_armed = false;
+                if e.starts_with("hackrf:") {
+                    self.error_dialog = Some(e.clone());
+                }
+            } else if tx.is_running() && tx.snap.started {
+                self.dialog_armed = false;
+            }
+        }
+        if let Some(message) = self.error_dialog.clone() {
+            let mut open = true;
+            let mut retry = false;
+            let mut scan = false;
+            let mut close = false;
+            egui::Window::new("HackRF One")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.set_max_width(520.0);
+                    ui.add(egui::Label::new(RichText::new(&message).color(Palette::for_ui(ui).error)).wrap());
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "Check that the radio is connected by USB and not open in another program.\n\
+                             Windows: install its WinUSB driver with Zadig (again after a driver update).\n\
+                             Linux: libhackrf's 53-hackrf.rules in /etc/udev/rules.d/ (udevadm control --reload), or run as root.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Scan devices").on_hover_text("Look for HackRF Ones on the USB bus again").clicked() {
+                            scan = true;
+                        }
+                        if ui.button("Retry").on_hover_text("Try to start the transmission again").clicked() {
+                            retry = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if scan {
+                self.hackrf_scan = Some(decdrm_station::hackrf_devices().map_err(|e| e.to_string()));
+            }
+            if retry {
+                self.error_dialog = None;
+                self.transmit(settings, tx, allow_device);
+            } else if close || !open {
+                self.error_dialog = None;
+            }
+        }
     }
 
     fn form(&mut self, ui: &mut Ui, devices: &mut DeviceLists, levels: Vec<Option<(f32, f32)>>) {
