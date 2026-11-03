@@ -700,7 +700,8 @@ channel). `frequency_hz` may be set anywhere the radio and its oscillator both f
 −250 kHz that is **1 MHz … 5 999.75 MHz** (the oscillator would leave the top of the
 band above that); with a positive offset the span becomes 1.25 MHz … 6 GHz. The GUI's
 frequency field is clamped to that span. `buffer_s` of signal is queued before the
-radio starts, so a burst of encoding delay does not leave a gap on air.
+radio starts, so a burst of encoding delay does not leave a gap on air; the queue is
+capped at 64 MB, so a high sample rate shortens it.
 
 With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
 axis reads `frequency (kHz on air)`, the DC carrier sits at the channel centre, and

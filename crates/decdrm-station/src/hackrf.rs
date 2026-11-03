@@ -65,6 +65,18 @@ const POLL: Duration = Duration::from_millis(50);
 /// underrun: the radio's own buffer bridges shorter gaps.
 const UNDERRUN_GUARD: Duration = Duration::from_millis(100);
 
+/// The most the station's queue may hold, bytes. `buffer_s` seconds at the sample
+/// rate would be 400 MB at 20 Msps with the longest setting; 64 MB is 16 s at
+/// 2 Msps and 1.6 s at 20 Msps, plenty of headroom either way.
+const MAX_PREBUFFER_BYTES: usize = 64 << 20;
+
+/// The signal kept queued in the station before/pacing the radio, bytes: `buffer_s`
+/// seconds of 8-bit I/Q at the sample rate, clamped and capped.
+fn prebuffer_bytes(settings: &HackrfSettings) -> usize {
+    let bytes = settings.buffer_s.clamp(0.05, 10.0) * f64::from(settings.sample_rate_hz) * 2.0;
+    (bytes as usize).min(MAX_PREBUFFER_BYTES)
+}
+
 /// Settings that describe the radio on air, for [`crate::StationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct HackrfStatus {
@@ -150,7 +162,7 @@ impl HackrfSink {
         let rate = settings.sample_rate_hz;
         let resampler = Resampler::new(48_000, rate, 2, ResamplerQuality::Balanced)
             .map_err(StationError::Output)?;
-        let prebuffer_bytes = (settings.buffer_s.clamp(0.05, 10.0) * rate as f64 * 2.0) as usize;
+        let prebuffer_bytes = prebuffer_bytes(settings);
 
         let sync = Arc::new(Sync::default());
         let writer = {
@@ -707,6 +719,34 @@ mod tests {
         let mut phase = 0.0;
         shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut phase, 0.0, &mut bytes);
         assert_eq!(bytes, [127, 127, 0x81 /* −127 */, 0]);
+    }
+
+    /// The queue is `buffer_s` seconds of 8-bit I/Q, clamped and capped so a high
+    /// sample rate with a long buffer cannot eat the memory.
+    #[test]
+    fn prebuffer_follows_the_settings_with_a_cap() {
+        let bytes = |settings: HackrfSettings| prebuffer_bytes(&settings);
+        assert_eq!(bytes(HackrfSettings::default()), 4_000_000, "1 s at 2 Msps");
+        assert_eq!(
+            bytes(HackrfSettings { buffer_s: 0.05, ..Default::default() }),
+            200_000,
+            "0.05 s at 2 Msps"
+        );
+        assert_eq!(
+            bytes(HackrfSettings { sample_rate_hz: 20_000_000, buffer_s: 10.0, ..Default::default() }),
+            64 << 20,
+            "400 MB wanted, the 64 MB cap kept"
+        );
+        assert_eq!(
+            bytes(HackrfSettings { buffer_s: 100.0, ..Default::default() }),
+            40_000_000,
+            "clamped to 10 s"
+        );
+        assert_eq!(
+            bytes(HackrfSettings { buffer_s: 0.0, ..Default::default() }),
+            200_000,
+            "clamped to 0.05 s"
+        );
     }
 
     /// A dry queue counts as an underrun once, and only after the guard: the
