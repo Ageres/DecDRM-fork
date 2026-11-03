@@ -35,8 +35,8 @@ pub struct SpectrumPlot {
     pub band_khz: Option<(f64, f64)>,
     /// DRM DC carrier, kHz.
     pub dc_khz: Option<f64>,
-    /// The channel's centre when the axis shows absolute frequencies on air (a
-    /// HackRF output); `None` keeps the axis in baseband offsets.
+    /// The channel's nominal frequency when the axis shows absolute frequencies on
+    /// air (a HackRF output); `None` keeps the axis in baseband offsets.
     pub on_air_khz: Option<f64>,
 }
 
@@ -73,7 +73,7 @@ impl SpectrumPlot {
     }
 
     /// Move the axis to the channel's on-air frequency (a HackRF output): every
-    /// frequency becomes absolute, the DC carrier becomes the channel centre.
+    /// frequency becomes absolute and the DC carrier lands at the nominal frequency.
     pub fn on_air(mut self, centre_hz: f64) -> Self {
         let centre_khz = centre_hz / 1e3;
         for point in &mut self.points {
@@ -447,8 +447,8 @@ mod tests {
         assert_eq!(tx.on_air_khz, None, "baseband offsets by default");
     }
 
-    /// A HackRF output: the axis becomes the on-air frequency, the DC carrier the
-    /// channel centre.
+    /// A HackRF output: the axis becomes the on-air frequency, and the DC carrier
+    /// lands at the channel's nominal frequency.
     #[test]
     fn spectrum_on_air_axis() {
         let tx = SpectrumPlot::new(

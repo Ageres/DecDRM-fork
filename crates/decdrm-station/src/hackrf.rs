@@ -86,9 +86,10 @@ fn prebuffer_bytes(settings: &HackrfSettings) -> usize {
 pub struct HackrfStatus {
     /// Nominal frequency of the DRM channel on air, Hz: the DC carrier.
     pub frequency_hz: u64,
-    /// Lowest and highest carrier of the signal on air, Hz. The 18 and 20 kHz
+    /// Lowest and highest carrier of the signal on air, Hz: the 18 and 20 kHz
     /// occupancies reach well above `frequency_hz` and only a little below it.
     pub band_lo_hz: f64,
+    /// See [`Self::band_lo_hz`].
     pub band_hi_hz: f64,
     /// Local-oscillator frequency, Hz (the nominal frequency less the IF offset).
     pub lo_hz: u64,
@@ -568,32 +569,37 @@ fn open_device(serial: Option<&str>) -> Result<rusb::DeviceHandle<rusb::GlobalCo
                 let sn = read_serial(&handle, &desc).unwrap_or_default();
                 found.push((handle, sn));
             }
-            Err(e) => unopenable.push(format!(
-                "a HackRF could not be opened ({e}); on Windows install its WinUSB driver (Zadig), on Linux check the udev rules or run as root"
-            )),
+            Err(e) => unopenable.push(e.to_string()),
         }
     }
     let answered = found.len();
-    let reject = |what: String| {
-        let mut message = what;
-        if let Some(first) = unopenable.first() {
-            message.push_str(". ");
-            message.push_str(first);
-        }
-        StationError::Hackrf(message)
+    // The advice for a radio that is on the bus but would not open.
+    let why = |reason: &str| {
+        format!(
+            "another program may be using it, or its driver is missing ({reason}); on Windows install the WinUSB driver (Zadig), on Linux check the udev rules or run as root"
+        )
     };
     match serial {
         Some(serial) => match found.into_iter().find(|(_, sn)| sn == serial) {
             Some((handle, _)) => Ok(handle),
-            None => Err(reject(format!(
-                "no HackRF with serial number \"{serial}\" ({answered} other HackRF(s) answered)"
-            ))),
+            None => {
+                let mut message =
+                    format!("no HackRF with serial number \"{serial}\" ({answered} other HackRF(s) answered)");
+                if let Some(first) = unopenable.first() {
+                    message.push_str("; a HackRF could not be opened: ");
+                    message.push_str(&why(first));
+                }
+                Err(StationError::Hackrf(message))
+            }
         },
-        None => match answered {
-            0 if unopenable.is_empty() => Err(StationError::Hackrf(
+        None => match (answered, unopenable.first()) {
+            (0, None) => Err(StationError::Hackrf(
                 "no HackRF One found (USB id 1d50:6089). Check that it is connected and not in use by another program.".into(),
             )),
-            0 => Err(reject("a HackRF One is connected but could not be opened".into())),
+            (0, Some(first)) => Err(StationError::Hackrf(format!(
+                "the HackRF could not be opened: {}",
+                why(first)
+            ))),
             _ => Ok(found.into_iter().next().expect("checked").0),
         },
     }

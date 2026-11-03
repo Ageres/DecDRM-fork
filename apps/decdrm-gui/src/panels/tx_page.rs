@@ -874,13 +874,14 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                     "The DRM channel's nominal frequency: the DC carrier. The 18 and 20 kHz occupancies are not symmetric about it (see Band).",
                 );
                 ui.end_row();
-                value(
-                    ui,
-                    "Band",
-                    format!("{:.1}..{:.1} kHz", h.band_lo_hz / 1e3, h.band_hi_hz / 1e3),
-                )
-                .on_hover_text(
-                    "The occupied spectrum, lowest to highest carrier. The 9 and 10 kHz occupancies are centred on the nominal frequency, but 18 and 20 kHz extend upwards: a 20 kHz mode A signal reaches +14.58 kHz and only -4.58 kHz, so its centre sits 5 kHz high (18 kHz: +13.08 and -4.08, 4.5 kHz high). That is the DRM spectrum table, not a tuning error.",
+                // kHz reads best on the medium wave; the short-wave bands are MHz.
+                let band = if h.frequency_hz >= 10_000_000 {
+                    format!("{:.4}..{:.4} MHz", h.band_lo_hz / 1e6, h.band_hi_hz / 1e6)
+                } else {
+                    format!("{:.1}..{:.1} kHz", h.band_lo_hz / 1e3, h.band_hi_hz / 1e3)
+                };
+                value(ui, "Band", band).on_hover_text(
+                    "The occupied spectrum, lowest to highest carrier. The 9 and 10 kHz occupancies are symmetric about the nominal frequency, but 18 and 20 kHz extend upwards: a 20 kHz mode A signal reaches +14.58 kHz and only -4.58 kHz, so the band's middle sits 5 kHz high (18 kHz: +13.08 and -4.08, 4.5 kHz high). That is the DRM spectrum table, not a tuning error.",
                 );
                 ui.end_row();
                 value(
@@ -889,7 +890,7 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                     format!("{:.4} MHz {:+.0} kHz IF", h.lo_hz as f64 / 1e6, h.if_offset_hz / 1e3),
                 )
                 .on_hover_text(
-                    "The local oscillator sits below the channel centre by the IF (above it when if_offset_hz is negative), clear of the radio's DC spike.",
+                    "The local oscillator sits below the nominal frequency by the IF (above it when if_offset_hz is negative), clear of the radio's DC spike.",
                 );
                 ui.end_row();
                 value(
@@ -1245,9 +1246,10 @@ fn output_hackrf_picker(
     if_offset_hz: f64,
     other_outputs: bool,
 ) {
-    /// Broadcast bands to start from (kHz): 70 kHz below each band's middle, 40 kHz
-    /// for the narrow 75 m and 15 m (70 would leave their band), and the
-    /// medium-wave channel the default was chosen for. The band's name.
+    /// Broadcast bands to start from (kHz): a little below each band's middle, so the
+    /// whole channel stays inside it (40 kHz in the narrow 75 m and 15 m, where 70
+    /// would leave the band), and the medium-wave channel the default was chosen for.
+    /// The band's name.
     const PRESETS: [(f64, &str); 15] = [
         (1_530.0, "medium wave"),
         (2_330.0, "120 m"),
@@ -1282,7 +1284,7 @@ fn output_hackrf_picker(
         })
         .response
         .on_hover_text(
-            "Broadcast bands, 70 kHz below each band's middle (40 kHz in the narrow 75 m and 15 m); drag the frequency for anything else.",
+            "Broadcast bands, a little below each band's middle so the whole channel stays inside the band; drag the frequency for anything else.",
         );
     // The radio's span less the IF: the channel and the local oscillator must both
     // stay inside it (1 MHz … 6 GHz), so the field cannot leave it either.
@@ -1328,7 +1330,7 @@ fn output_hackrf_picker(
     if scanning {
         ui.label(RichText::new("scanning…").weak());
     }
-    let driver_hint = "Windows: the radio needs its WinUSB driver (Zadig); Linux: libhackrf's udev rule, or run as root.";
+    let driver_hint = "Windows: the radio needs its WinUSB driver (Zadig); Linux: libhackrf's udev rule, or run as root. A radio another program is using cannot be opened either.";
     match scan {
         Some(Ok(list)) if list.is_empty() => {
             ui.colored_label(ui.visuals().warn_fg_color, "no HackRF found")
@@ -1342,8 +1344,8 @@ fn output_hackrf_picker(
             let failed = list.iter().filter(|d| d.error.is_some()).count();
             let summary = match failed {
                 0 => format!("{} found", list.len()),
-                n if n == list.len() => "cannot open".to_string(),
-                n => format!("{} found, {n} cannot open", list.len()),
+                n if n == list.len() => "cannot open (driver, or in use?)".to_string(),
+                n => format!("{} found, {n} cannot open (driver, or in use?)", list.len()),
             };
             let text = RichText::new(summary).monospace();
             ui.label(if failed > 0 { text.color(ui.visuals().warn_fg_color) } else { text })

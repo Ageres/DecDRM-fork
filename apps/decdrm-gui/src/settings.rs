@@ -424,7 +424,7 @@ pub struct Settings {
     pub tx_output_file: Option<PathBuf>,
     /// Sound card for [`TxOutput::Device`] (`None` = system default).
     pub tx_output_device: Option<String>,
-    /// DRM channel centre for [`TxOutput::Hackrf`], kHz.
+    /// Nominal frequency (the DC carrier) of the DRM channel for [`TxOutput::Hackrf`], kHz.
     pub tx_hackrf_frequency_khz: f64,
     /// HackRF transmit VGA gain, dB (0–47).
     pub tx_hackrf_gain_db: u32,

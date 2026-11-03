@@ -48,7 +48,7 @@ pub struct Overrides {
     pub file: Option<PathBuf>,
     /// Sound card for [`TxOutput::Device`] (`None` = system default).
     pub device: Option<String>,
-    /// DRM channel centre for [`TxOutput::Hackrf`], kHz.
+    /// Nominal frequency (the DC carrier) of the DRM channel for [`TxOutput::Hackrf`], kHz.
     pub hackrf_frequency_khz: f64,
     /// HackRF transmit VGA gain for [`TxOutput::Hackrf`], dB.
     pub hackrf_gain_db: u32,

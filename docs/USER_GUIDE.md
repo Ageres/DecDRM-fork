@@ -677,7 +677,7 @@ the cable.
 over USB, on the radio's own clock — no libhackrf or sound card needed. The station's
 complex baseband is resampled to the HackRF's sample rate and shifted to an intermediate
 frequency inside its passband, so the DRM channel keeps clear of the radio's DC spike
-and LO leakage; the local oscillator runs at the nominal frequency less that IF.
+and LO leakage; the local oscillator runs at the nominal frequency minus that IF.
 
 ```toml
 [output]

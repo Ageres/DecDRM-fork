@@ -382,7 +382,7 @@ impl TxSession {
                     snap.band_hz,
                 );
                 // A HackRF output puts the channel on a real frequency: the spectrum
-                // then shows it, with the DC carrier at the channel centre.
+                // then shows it, with the DC carrier at the nominal frequency.
                 if let Some(h) = &snap.status.hackrf {
                     plot = plot.on_air(h.frequency_hz as f64);
                 }
