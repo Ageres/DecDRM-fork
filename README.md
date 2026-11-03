@@ -2,6 +2,12 @@
 
 A Digital Radio Mondiale (DRM30) receiver **and transmitter** written in Rust.
 
+> **This is a fork.** It adds a HackRF One transmitter output (`[output.hackrf]`) to
+> [CasualArclamp/DecDRM](https://github.com/CasualArclamp/DecDRM). Use it only if you
+> need to transmit through a HackRF; otherwise use the
+> [original repository](https://github.com/CasualArclamp/DecDRM), where the project is
+> developed and kept up to date.
+
 DecDRM decodes DRM robustness modes A–D in every channel bandwidth (4.5–20 kHz) from
 recordings or a live sound card (for example a virtual audio cable fed by a web SDR such
 as a KiwiSDR), and generates DRM signals from a station description. The signal
