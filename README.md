@@ -109,6 +109,9 @@ cargo build --release
 Requirements: Rust 1.88 or newer (1.95 for the GUI), a C/C++ compiler (MSVC Build Tools
 on Windows, gcc on Linux) and CMake for the vendored codecs, and on Linux the ALSA
 development package (`libasound2-dev`) plus `libudev-dev` for the HackRF output's libusb.
+Step-by-step instructions for Windows, Ubuntu/Debian and a Raspberry Pi 4 are in
+[BUILD.md](docs/BUILD.md); all three are covered by CI (the Pi's aarch64 build runs on an
+arm64 runner).
 
 **Portable Windows executables**: `decdrm-gui.exe` and `decdrm.exe` that run on any
 64-bit Windows 10/11 with nothing installed (C runtime linked statically, DAC with its
