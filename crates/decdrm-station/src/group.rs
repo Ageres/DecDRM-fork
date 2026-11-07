@@ -121,6 +121,12 @@ impl GroupStation {
         self.stop.clone()
     }
 
+    /// Load every multiplex's Journaline page files again now; returns the number of
+    /// Journaline applications.
+    pub fn reload_journaline(&mut self) -> usize {
+        self.stations.iter_mut().map(Station::reload_journaline).sum()
+    }
+
     /// Log lines since the last call, each prefixed with its multiplex's frequency.
     pub fn take_log(&mut self) -> Vec<String> {
         let mut lines = Vec::new();

@@ -17,7 +17,7 @@ use crate::indicators::fmt_time;
 use crate::settings::{Settings, TxOutput};
 use crate::transmitter::TxSession;
 use crate::tx_config::{self, EXAMPLE_STATION, Overrides};
-use decdrm_station::{JournalineStatus, MultiplexPlan, StationConfig, WebStreamState, WebStreamStatus};
+use decdrm_station::{JournalineStatus, StationConfig, StationPlan, WebStreamState, WebStreamStatus};
 use eframe::egui::{self, Color32, RichText, Ui};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use std::path::{Path, PathBuf};
@@ -257,13 +257,17 @@ impl TxPage {
 
     /// Check the editor text with the overrides; keeps the result for display and
     /// returns the configuration if it is valid.
-    fn check(&mut self, settings: &Settings) -> Option<(StationConfig, MultiplexPlan)> {
+    fn check(&mut self, settings: &Settings) -> Option<(StationConfig, StationPlan)> {
         let base = self.base_dir();
         let (checked, result) =
             match tx_config::check(&self.text, &base, &Self::overrides(settings)) {
                 Ok((cfg, plan)) => {
-                    // A modulator's multiplex comes with the MDI.
-                    self.bar = plan.mdi.is_none().then(|| PlanBar::of(&cfg, &plan));
+                    // A modulator's multiplex comes with the MDI; a group has no single
+                    // band to draw.
+                    self.bar = match &plan {
+                        StationPlan::Single(p) if p.mdi.is_none() => Some(PlanBar::of(&cfg, p)),
+                        _ => None,
+                    };
                     // Whether the *file* names a destination the HackRF choice leaves
                     // out (the prepared config has them cleared already).
                     self.other_outputs = StationConfig::from_toml_str(&self.text)
@@ -1096,6 +1100,24 @@ fn services_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
     let s = &tx.snap.status;
     let live = tx.is_running() && tx.snap.started;
     card(ui, "Services", "", |ui| {
+        // A group carries one service list per multiplex; the block below is the first.
+        if !s.multiplexes.is_empty() {
+            for (k, m) in s.multiplexes.iter().enumerate() {
+                ui.label(
+                    RichText::new(format!(
+                        "multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms",
+                        k + 1,
+                        m.frequency_hz as f64 / 1e6,
+                        m.mode,
+                        m.services,
+                        if m.services == 1 { "" } else { "s" },
+                        m.output_rms_dbfs
+                    ))
+                    .weak(),
+                );
+            }
+            ui.separator();
+        }
         if s.services.is_empty() {
             placeholder(ui, "The services appear when the transmitter starts.");
             return;
@@ -1304,7 +1326,7 @@ fn output_hackrf_picker(
             .suffix(" kHz"),
     )
     .on_hover_text(format!(
-        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
+        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; with [[multiplex]] tables it is the first multiplex's frequency. These fields win afterwards."
     ));
     // The IF presets: -850..+850 kHz in 50 kHz steps, 0 being zero IF. A choice that
     // would push the local oscillator out of the radio's range at the current channel

@@ -823,7 +823,7 @@ brings a narrow group (up to about 96 kHz of span) to the radio's rate, a wider 
 (up to 1 MHz) is resampled per multiplex first. The group's own IF (where its centre
 sits relative to the local oscillator) is applied to the whole stream.
 
-The GUI runs one multiplex; `decdrm tx` sends a group, and `scripts/pi/stationctl`
+The GUI transmits a group too: the quick frequency field edits the first multiplex, and the Services card lists them all. `scripts/pi/stationctl`
 keeps it running on a Pi. The load for one to four carriers is in the build guide.
 ### Relaying an internet radio stream
 
