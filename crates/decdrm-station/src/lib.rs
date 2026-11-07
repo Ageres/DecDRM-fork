@@ -58,8 +58,9 @@ pub use afs::{AfsMultiplexSettings, AfsOtherSettings, AfsRegionSettings, AfsSche
 pub use audio::AudioCounters;
 pub use config::{
     AppKind, AppSettings, AudioInputSettings, AudioSettings, ChannelSettings, Codec, EpgProgramme, FacLanguage,
-    HackrfSettings, JournalineFile, JournalinePage, MdiSettings, OutputSettings, Part, ProgrammeType,
-    ResamplerSetting, SampleFormat, ServiceSettings, SignalFormat, SimulateSettings, StationConfig, TimeSettings,
+    HackrfSettings, JournalineFile, JournalinePage, MdiSettings, MultiplexSettings, OutputSettings, Part,
+    ProgrammeType, ResamplerSetting, SampleFormat, ServiceSettings, SignalFormat, SimulateSettings, StationConfig,
+    TimeSettings,
 };
 #[cfg(feature = "hackrf")]
 pub use hackrf::devices as hackrf_devices;
@@ -68,6 +69,9 @@ pub use hackrf::{HackrfDevice, HackrfStatus};
 pub use modulator::ModulatorStatus;
 pub use data::load_journaline;
 pub use error::{ConfigProblems, Result, StationError};
-pub use plan::{AppPlan, AudioPlan, MultiplexPlan, ServicePlan, StreamContent, StreamPlan};
+pub use plan::{
+    AppPlan, AudioPlan, GroupPlan, GroupStrategy, GroupedMultiplex, MultiplexPlan, ServicePlan, StationPlan,
+    StreamContent, StreamPlan,
+};
 pub use station::{AppStatus, AudioStatus, FeedStatus, JournalineStatus, ServiceStatus, Station, StationStatus, StopHandle};
 pub use webstream::{WebStreamState, WebStreamStatus};

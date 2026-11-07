@@ -1,0 +1,58 @@
+# Two DRM30 multiplexes in one HackRF One stream (see docs/design/multi-multiplex.md).
+#
+# This is the checked-in form of the design: the station plans and checks the group
+# (decdrm tx station-multiplexes.toml --check); sending several multiplexes in one
+# stream is not implemented yet.
+#
+# The channels are 20 kHz apart, both mode B at 10 kHz, so the composite is about
+# 30 kHz wide. The group is placed 250 kHz below the local oscillator (the same IF
+# default as a single multiplex).
+[time]
+
+[output]
+format = "iq"          # complex baseband; the HackRF does its own IF shift
+level_dbfs = -15
+
+[output.hackrf]
+# frequency_hz is not used with [[multiplex]]: each multiplex names its own.
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+tx_gain_db = 40
+amp_enable = false
+resampler = "fast"     # 64-tap interpolation; a Raspberry Pi 4 needs it at 2 Msps
+
+[[multiplex]]
+frequency_hz = 25_760_000
+mode = "B"
+occupancy = 3          # 10 kHz
+msc_mode = "16-QAM"
+protection_b = 1
+level_dbfs = -15
+
+[[multiplex.service]]
+label = "PROGRAMME A"
+id = 0x42
+programme_type = "Information"
+
+[multiplex.service.audio]
+codec = "xhe-aac"
+stereo = false
+input = { tone_hz = 440.0 }
+
+[[multiplex]]
+frequency_hz = 25_780_000
+mode = "B"
+occupancy = 3          # 10 kHz
+msc_mode = "16-QAM"
+protection_b = 1
+level_dbfs = -15
+
+[[multiplex.service]]
+label = "PROGRAMME B"
+id = 0x43
+programme_type = "Information"
+
+[multiplex.service.audio]
+codec = "xhe-aac"
+stereo = false
+input = { tone_hz = 880.0 }

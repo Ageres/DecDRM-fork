@@ -122,7 +122,7 @@ The plan (`decdrm tx --check`) prints the group and one line per multiplex:
 hackrf: 25.7700 MHz (LO 25.5200 MHz + IF -250 kHz), 2 Msps, TX gain 0 dB, resampler fast
   multiplex 1: 25.7600 MHz, mode B, 10 kHz, IF -260 kHz, services: Programme A
   multiplex 2: 25.7800 MHz, mode B, 10 kHz, IF -240 kHz, services: Programme B
-  span: 30 kHz of a 1750 kHz passband, intermediate rate 96 kHz, one composite resampler
+  span: 20 kHz between the carriers (30 kHz of signal), limit 1000 kHz, intermediate rate 48 kHz, one composite resampler
 ```
 
 It must check, per multiplex and for the group:

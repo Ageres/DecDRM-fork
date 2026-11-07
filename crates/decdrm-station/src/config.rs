@@ -47,6 +47,12 @@ pub struct StationConfig {
     /// The services, in Short Id order (`[[service]]` tables in the file).
     #[serde(rename = "service", default)]
     pub services: Vec<ServiceSettings>,
+    /// The multiplexes (`[[multiplex]]` tables): each with its own frequency, channel
+    /// and services, all sent through one stream. Empty (the usual form) means a single
+    /// multiplex built from `[channel]`, `[[service]]` and `[output.hackrf]
+    /// frequency_hz`; see `docs/design/multi-multiplex.md`.
+    #[serde(rename = "multiplex", default, skip_serializing_if = "Vec::is_empty")]
+    pub multiplexes: Vec<MultiplexSettings>,
     /// Modulator: transmit MDI from a content server instead of the services (the
     /// channel, services, time and alternative frequencies are then not used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +65,11 @@ pub struct StationConfig {
 }
 
 impl StationConfig {
+    /// Every configured service: the top-level ones, or those inside `[[multiplex]]`.
+    pub fn all_services(&self) -> impl Iterator<Item = &ServiceSettings> {
+        self.services.iter().chain(self.multiplexes.iter().flat_map(|m| m.services.iter()))
+    }
+
     /// Whether the programme ends by itself: every audio service reads a non-looping
     /// file (false for data-only stations and for tone or sound-card inputs). The same
     /// rule as [`crate::Station::inputs_finite`], available before a station (and its
@@ -68,7 +79,7 @@ impl StationConfig {
             // A recording ends; UDP goes on.
             return matches!(crate::modulator::origin(m, self.base_dir.as_deref()), Ok(decdrm_mdi::source::MdiOrigin::File { .. }));
         }
-        let mut inputs = self.services.iter().filter_map(|s| s.audio.as_ref()).map(|a| &a.input).peekable();
+        let mut inputs = self.all_services().filter_map(|s| s.audio.as_ref()).map(|a| &a.input).peekable();
         inputs.peek().is_some() && inputs.all(|i| i.file.is_some() && !i.looped)
     }
 
@@ -136,6 +147,32 @@ pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
 // ---------------------------------------------------------------------------------
 // Channel
 // ---------------------------------------------------------------------------------
+
+/// One multiplex of a multi-multiplex station (`[[multiplex]]`): its frequency, its
+/// level, its own channel parameters and its own services. With no `[[multiplex]]`
+/// tables the station is a single multiplex built from `[channel]`, `[[service]]` and
+/// `[output.hackrf] frequency_hz`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MultiplexSettings {
+    /// Nominal frequency of the DRM channel on air, Hz (the DC carrier). Required when
+    /// `[[multiplex]]` is used; `[output.hackrf] frequency_hz` is then ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_hz: Option<u64>,
+    /// RMS level of this multiplex in the composite, dBFS. Default: `[output]
+    /// level_dbfs`; the plan warns when the sum of the multiplexes would clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_dbfs: Option<f64>,
+    /// The DRM channel parameters (mode, occupancy, MSC/SDC, interleaving, protection).
+    #[serde(flatten)]
+    pub channel: ChannelSettings,
+    /// The services, in Short Id order (`[[multiplex.service]]` tables in the file).
+    #[serde(rename = "service", default)]
+    pub services: Vec<ServiceSettings>,
+    /// Keys the flattened channel does not know: `flatten` turns serde's
+    /// unknown-field check off, so the plan names them instead.
+    #[serde(flatten, default, skip_serializing)]
+    pub(crate) unknown: std::collections::BTreeMap<String, toml::Value>,
+}
 
 /// Transmission parameters. Defaults: mode B, 10 kHz (SO 3), 64-QAM with protection
 /// level 1, 16-QAM SDC, long interleaving — Dream's defaults.

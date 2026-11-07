@@ -1,7 +1,7 @@
 //! `decdrm tx` — run the DRM transmitter described by a station configuration file.
 
 use anyhow::{Context, Result, bail};
-use decdrm_station::{Station, StationConfig, StationStatus, StopHandle};
+use decdrm_station::{Station, StationConfig, StationPlan, StationStatus, StopHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,11 +50,17 @@ pub fn run(a: TxArgs) -> Result<()> {
             sim.snr_db = a.snr;
         }
     }
-    let plan = cfg.validate()?;
+    let plan = cfg.validate_station()?;
     print!("{}", plan.describe(&cfg));
     if a.check {
         return Ok(());
     }
+    let plan = match plan {
+        StationPlan::Single(plan) => plan,
+        StationPlan::Group(_) => bail!(
+            "several multiplexes are configured: sending them in one stream is not implemented yet (see docs/design/multi-multiplex.md; --check prints the group plan)"
+        ),
+    };
     if let Some(d) = a.duration
         && !(d.is_finite() && d > 0.0)
     {

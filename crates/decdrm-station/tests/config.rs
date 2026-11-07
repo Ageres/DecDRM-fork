@@ -866,3 +866,145 @@ fn hackrf_if_preset_grid_validates() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------
+// Several multiplexes ([[multiplex]])
+// ---------------------------------------------------------------------------------
+
+/// Two multiplexes in one stream: the group plan, the placing and the strategy.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_group_plan() {
+    let cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    let plan = cfg.validate_station().unwrap_or_else(|e| panic!("{e}"));
+    let decdrm_station::StationPlan::Group(group) = plan else { panic!("expected a group") };
+    assert_eq!(group.multiplexes.len(), 2);
+    assert_eq!(group.span_hz, 20_000.0);
+    assert!((group.signal_span_hz - 29_660.0).abs() < 100.0, "{}", group.signal_span_hz);
+    assert_eq!(group.lo_hz, 26_020_000.0);
+    assert_eq!(group.multiplexes[0].offset_hz, -260_000.0);
+    assert_eq!(group.multiplexes[1].offset_hz, -240_000.0);
+    assert_eq!(group.strategy, decdrm_station::GroupStrategy::SharedResampler);
+    assert_eq!(group.intermediate_hz, Some(48_000));
+    let described = group.describe(&cfg);
+    assert!(described.contains("25.7600 MHz") && described.contains("25.7800 MHz"), "{described}");
+    // Sending a group is not implemented yet: validate() says so.
+    let e = cfg.validate().unwrap_err();
+    assert!(has(e.problems(), "not implemented"), "{e}");
+    // The configuration round-trips through TOML with its multiplexes.
+    let back = StationConfig::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap();
+    assert_eq!(back.multiplexes.len(), 2);
+    assert_eq!(back.multiplexes[0].frequency_hz, Some(25_760_000));
+    assert_eq!(back.multiplexes[0].services.len(), 1);
+}
+
+/// The group's own checks: the span limit, overlap, missing pieces and clipping.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_group_checks() {
+    let problems_of = |text: String| -> Vec<String> {
+        match parse(&text).validate_station() {
+            Ok(_) => Vec::new(),
+            Err(e) => {
+                assert!(!e.problems().is_empty(), "not a configuration error: {e}");
+                e.problems().to_vec()
+            }
+        }
+    };
+    // 1.1 MHz apart: over the design limit.
+    let p = problems_of(multiplex_text(25_000_000, 26_100_000, -15, ""));
+    assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
+    // 5 kHz apart: the 10 kHz channels overlap.
+    let p = problems_of(multiplex_text(25_760_000, 25_765_000, -15, ""));
+    assert!(has(&p, "overlap"), "{p:?}");
+    // 0 dBFS per multiplex: the sum would clip the 8-bit DAC.
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, 0, ""));
+    assert!(has(&p, "lower level_dbfs"), "{p:?}");
+    // A missing frequency.
+    let missing = r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+resampler = "fast"
+[[multiplex]]
+mode = "B"
+occupancy = 3
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+"#;
+    let p = problems_of(missing.to_string());
+    assert!(has(&p, "frequency_hz is required"), "{p:?}");
+    // Services at the top level and a sound-card output are rejected.
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    cfg.services = vec![decdrm_station::ServiceSettings::new("Top", 0x44)];
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "belong inside the multiplexes"), "{p:?}");
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    cfg.output.device = Some("default".into());
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "[output.hackrf]"), "{p:?}");
+    // An unknown key inside a multiplex is named by the plan (flatten turns serde's
+    // unknown-field check off, so the parser cannot).
+    let typo = multiplex_text(25_760_000, 25_780_000, -15, "").replace("occupancy = 3", "occupancyy = 3");
+    let p = parse(&typo).validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "unknown field"), "{p:?}");
+    // The plain two-multiplex file is valid.
+    assert!(problems_of(multiplex_text(25_760_000, 25_780_000, -15, "")).is_empty());
+}
+
+/// The checked-in example of a two-multiplex group validates.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_example_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/station-multiplexes.toml");
+    let cfg = StationConfig::load(&path).unwrap();
+    let plan = cfg.validate_station().unwrap_or_else(|e| panic!("{e}"));
+    let decdrm_station::StationPlan::Group(group) = plan else { panic!("expected a group") };
+    assert_eq!(group.multiplexes.len(), 2);
+    assert_eq!(group.strategy, decdrm_station::GroupStrategy::SharedResampler);
+}
+
+/// Two 10 kHz multiplexes on the given frequencies, `level` dBFS each, through a
+/// HackRF with the default IF; `extra` is added to `[output.hackrf]`.
+#[cfg(feature = "hackrf")]
+fn multiplex_text(a: u64, b: u64, level: i32, extra: &str) -> String {
+    format!(
+        r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+resampler = "fast"
+{extra}
+[[multiplex]]
+frequency_hz = {a}
+mode = "B"
+occupancy = 3
+level_dbfs = {level}
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = {{ tone_hz = 440.0 }}
+
+[[multiplex]]
+frequency_hz = {b}
+mode = "B"
+occupancy = 3
+level_dbfs = {level}
+[[multiplex.service]]
+label = "B"
+id = 0x43
+[multiplex.service.audio]
+codec = "he-aac"
+input = {{ tone_hz = 880.0 }}
+"#
+    )
+}
