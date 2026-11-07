@@ -256,23 +256,26 @@ repository, the build, the kernel module and udev, the radio, the station.
    ```
 
    **Several multiplexes.** One radio can send up to four multiplexes at once, mode B
-   at 9/10 kHz, at most 1 MHz apart (see the user guide). A group below about 96 kHz
-   of span shares one resampler, so the cost stays close to one multiplex's; a wider
-   group resamples every multiplex on its own. With `resampler = "fast"` (single
-   multiplexes measured at about 60 % of one core):
+   at 9/10 kHz, at most 1 MHz apart (see the user guide). The shared resampler's
+   intermediate rate is 48, 96 or 192 kHz, which holds carrier separations up to about
+   36, 84 and 180 kHz; a wider group resamples every multiplex on its own. With
+   `resampler = "fast"` (single multiplexes measured at about 60 % of one core; a
+   group is built and combined on one thread):
 
-   | Carriers, span up to 96 kHz | One core | Real-time margin |
-   |---|---|---|
-   | 1 | about 60 % | 1.6x |
-   | 2 | about 66 % | 1.5x |
-   | 3 | about 72 % | 1.4x |
-   | 4 | about 78 % | 1.3x |
+   | Carriers | span <= 36 kHz | <= 84 kHz | <= 180 kHz |
+   |---|---|---|---|
+   | 1 | about 60 % | about 63 % | about 65 % |
+   | 2 | about 68 % | about 70 % | about 76 % |
+   | 3 | about 74 % | about 78 % | about 86 % |
+   | 4 | about 80 % | about 86 % | about 96 % (the limit) |
 
-   A span above 96 kHz (up to 1 MHz) costs a resampler per multiplex: about 120 % of
-   one core at two carriers and 240 % at four. Four wide carriers need a fan and are
-   the case to measure first: `vcgencmd get_throttled` must stay `0x0`, and the
-   station's status line must show no underruns. `--duration 20` with a station file
-   that has one and then four `[[multiplex]]` tables measures it, as above.
+   A span above about 180 kHz (up to 1 MHz) costs a resampler per multiplex, about
+   60 % of a core each: the current single-threaded code keeps real time there on a
+   desktop, not on a Pi (two carriers would need 120 % of one thread). The 180 kHz
+   cases are the ones to measure first: `vcgencmd get_throttled` must stay `0x0`, and
+   the station's status line must show no underruns. `--duration 20` with a station
+   file that has one, two and four `[[multiplex]]` tables measures it, as above.
+
 9. **systemd.** A unit for a station, with the udev rule's group and the log in
    the journal (running as root is unnecessary). Change the user and the paths to
    your setup:

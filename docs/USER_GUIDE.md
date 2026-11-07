@@ -819,8 +819,9 @@ is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limi
   `resampler = "balanced"`, which the Pi cannot keep up with (see the build guide).
 
 Each multiplex's 48 kHz baseband is combined with the others: one shared resampler
-brings a narrow group (up to about 96 kHz of span) to the radio's rate, a wider group
-(up to 1 MHz) is resampled per multiplex first. The group's own IF (where its centre
+brings a group of up to about 180 kHz of carrier separation (the intermediate rate is
+48, 96 or 192 kHz) to the radio's rate; a wider group (up to 1 MHz) resamples each
+multiplex first. The group's own IF (where its centre
 sits relative to the local oscillator) is applied to the whole stream.
 
 The GUI transmits a group too: the quick frequency field edits the first multiplex, and the Services card lists them all. `scripts/pi/stationctl`

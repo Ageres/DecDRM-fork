@@ -4,6 +4,12 @@ Part of the multi-multiplex feature (see `docs/design/multi-multiplex.md`). Seco
 three; depends on the config and plan issue.
 
 Suggested labels: `enhancement`, `hackrf`, `station`.
+> **Built differently.** The feature shipped as a `GroupStation` that runs one plain
+> `Station` per multiplex (with its outputs stripped) and a `Combiner`, rather than a
+> `Station`/`Multiplex` split; the single-multiplex path stayed untouched and is
+> byte-identical. Still open from this issue: a composite *file* output
+> (`output.sample_rate_hz`) and the thread per multiplex that keeps a wide span (above
+> about 180 kHz) real time on a Pi 4.
 
 ## Why
 
