@@ -802,8 +802,7 @@ fn set_sample_rate(handle: &mut rusb::DeviceHandle<rusb::GlobalContext>, rate_hz
         )
         .map(|_| ())
         .map_err(|e| StationError::Hackrf(format!("setting the sample rate failed: {e}")))?;
-    // 3/4 of the rate, within the filter's 1.75–28 MHz range.
-    let bw = (rate_hz as u64 * 3 / 4).clamp(1_750_000, 28_000_000) as u32;
+    let bw = HackrfSettings::baseband_filter_hz(rate_hz);
     handle
         .write_control(
             request_type_out(),

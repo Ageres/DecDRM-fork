@@ -280,7 +280,8 @@ pub struct HackrfSettings {
     /// keeping the DRM channel clear of the HackRF's DC spike and LO leakage.
     /// Default -250 kHz (the oscillator above the channel); the offset plus the
     /// channel's own span (up to 14.6 kHz above the DC carrier in the 18 and 20 kHz
-    /// occupancies) must stay within half the sample rate.
+    /// occupancies) must stay within half of the analog filter's bandwidth (3/4 of
+    /// the sample rate, at least 1.75 MHz).
     pub if_offset_hz: f64,
     /// Transmit VGA gain, 0–47 dB (the final stage before the antenna).
     pub tx_gain_db: u32,
@@ -336,6 +337,13 @@ impl HackrfSettings {
         let lower = (floor as f64 + offset).max(floor as f64);
         let upper = (ceiling as f64 + offset).min(ceiling as f64);
         (lower as u64, (upper.max(lower)) as u64)
+    }
+
+    /// Bandwidth of the TX baseband filter at `rate_hz`, Hz: 3/4 of the rate, clamped
+    /// to the chip's 1.75–28 MHz range. At 2 Msps the floor applies, so the filter is
+    /// 1.75 MHz wide (the usable band is about ±875 kHz), not 1.5 MHz.
+    pub fn baseband_filter_hz(rate_hz: u32) -> u32 {
+        ((rate_hz as u64 * 3) / 4).clamp(1_750_000, 28_000_000) as u32
     }
 
     /// The local-oscillator frequency: below the nominal frequency by the IF offset

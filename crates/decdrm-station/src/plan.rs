@@ -646,13 +646,14 @@ fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Prob
                 h.if_offset_hz
             ));
         }
-        // The channel also has to fit into the radio's passband, centred on the IF.
-        let half = f64::from(h.sample_rate_hz) / 2.0;
+        // The channel also has to fit into the analog TX filter: 3/4 of the sample
+        // rate, which is 1.75 MHz at 2 Msps, so the usable half-band is 875 kHz.
+        let half = f64::from(HackrfSettings::baseband_filter_hz(h.sample_rate_hz)) / 2.0;
         if h.if_offset_hz + band_lo - margin < -half
             || h.if_offset_hz + band_hi + margin > half
         {
             p.push(format!(
-                "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of sample_rate_hz {}",
+                "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of the transmit filter at sample_rate_hz {}",
                 band_lo / 1e3,
                 band_hi / 1e3,
                 h.if_offset_hz,

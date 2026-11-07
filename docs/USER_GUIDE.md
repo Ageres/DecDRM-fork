@@ -728,7 +728,7 @@ the station survives the SSH session, and one that exits with an error is restar
 `start --log` appends to `station/logs/decdrm-<name>.log`. The
 [build guide](BUILD.md#raspberry-pi-4-64-bit) has the details.
 
-The GUI's HackRF mode offers **IF presets** from −950 to +950 kHz in 50 kHz steps:
+The GUI's HackRF mode offers **IF presets** from −850 to +850 kHz in 50 kHz steps:
 negative puts the local oscillator above the channel (the default −250 kHz), positive
 below; 0 is zero IF and puts the radio's DC spike on the channel. A preset that would
 push the local oscillator out of the radio's range at the current channel frequency is

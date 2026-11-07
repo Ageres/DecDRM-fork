@@ -1306,11 +1306,11 @@ fn output_hackrf_picker(
     .on_hover_text(format!(
         "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
     ));
-    // The IF presets: -950..+950 kHz in 50 kHz steps, 0 being zero IF. A choice that
+    // The IF presets: -850..+850 kHz in 50 kHz steps, 0 being zero IF. A choice that
     // would push the local oscillator out of the radio's range at the current channel
     // frequency is offered disabled, with the frequency span it would need.
     const IF_STEP_KHZ: i32 = 50;
-    const IF_MAX_KHZ: i32 = 950;
+    const IF_MAX_KHZ: i32 = 850;
     let selected = if settings.tx_hackrf_if_khz == 0.0 {
         "IF 0 kHz".to_string()
     } else if (settings.tx_hackrf_if_khz.abs() <= f64::from(IF_MAX_KHZ))
@@ -1362,7 +1362,7 @@ fn output_hackrf_picker(
         })
         .response
         .on_hover_text(
-            "The IF the DRM channel is shifted to within the radio's passband: negative puts the local oscillator above the channel (the default -250 kHz), positive below. 0 is zero IF and puts the radio's DC spike on the channel. Presets from -950 to +950 kHz in 50 kHz steps; a value from the station file that is not on the grid is kept and shown as it is.",
+            "The IF the DRM channel is shifted to within the radio's passband: negative puts the local oscillator above the channel (the default -250 kHz), positive below. 0 is zero IF and puts the radio's DC spike on the channel. Presets from -850 to +850 kHz in 50 kHz steps; a value from the station file that is not on the grid is kept and shown as it is.",
         );
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_gain_db)

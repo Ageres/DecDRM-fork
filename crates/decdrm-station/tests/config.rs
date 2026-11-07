@@ -813,12 +813,14 @@ fn hackrf_if_check_uses_the_real_spectrum() {
         });
         cfg.validate().map(|_| ()).map_err(|e| e.problems().to_vec())
     };
-    // 10 kHz: -4.83..+4.83 kHz around the IF, so +990 kHz still fits into +-1 MHz.
-    assert!(check(3, 990_000.0).is_ok());
-    // 20 kHz: -4.64..+14.58 kHz, so the top carrier of +990 kHz lands at 1004.6 kHz.
-    let p = check(5, 990_000.0).unwrap_err();
-    assert!(p.iter().any(|x| x.contains("outside +-1000 kHz")), "{p:?}");
-    assert!(check(5, 985_000.0).is_ok());
+    // The analog filter is 3/4 of the rate (1.75 MHz at 2 Msps), so the usable
+    // half-band is 875 kHz, not 1000.
+    // 10 kHz: -4.83..+4.83 kHz around the IF, so +870 kHz still fits into +-875 kHz.
+    assert!(check(3, 870_000.0).is_ok());
+    // 20 kHz: -4.64..+14.58 kHz, so the top carrier of +870 kHz lands at 884.6 kHz.
+    let p = check(5, 870_000.0).unwrap_err();
+    assert!(p.iter().any(|x| x.contains("outside +-875 kHz")), "{p:?}");
+    assert!(check(5, 860_000.0).is_ok());
 }
 
 /// The whole channel, not only the nominal frequency, has to stay inside the radio's
@@ -844,12 +846,12 @@ fn hackrf_channel_stays_inside_the_radios_range() {
     assert!(check(1_010_000).is_ok(), "1.01 MHz clears it");
 }
 
-/// Every step of the GUI's -950..+950 kHz IF preset grid is usable with a 20 kHz
+/// Every step of the GUI's -850..+850 kHz IF preset grid is usable with a 20 kHz
 /// channel at 2 Msps and a channel frequency that keeps the oscillator in range.
 #[cfg(feature = "hackrf")]
 #[test]
 fn hackrf_if_preset_grid_validates() {
-    for if_khz in (-950..=950).step_by(50) {
+    for if_khz in (-850..=850).step_by(50) {
         let mut cfg = parse(&base());
         cfg.output.file = None;
         cfg.output.format = decdrm_station::SignalFormat::Iq;
