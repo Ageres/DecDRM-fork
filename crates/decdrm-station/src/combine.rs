@@ -19,14 +19,23 @@ use decdrm_io::Resampler;
 
 const TAU: f64 = std::f64::consts::TAU;
 
+/// Renormalize every 4096 samples (the rotation's rounding would otherwise drift).
+const RENORMALIZE_MASK: usize = 4095;
+
+/// (cos, sin) of an angle, in the order the loops use them.
+fn sin_cos(angle: f64) -> (f64, f64) {
+    let (sin, cos) = angle.sin_cos();
+    (cos, sin)
+}
+
 /// Several multiplexes' 48 kHz baseband on their way to one stream at the radio's rate.
 pub(crate) struct Combiner {
-
     /// Per multiplex: 48 kHz -> `rate` (absent when `rate` is 48 kHz).
     stages: Vec<Option<Resampler>>,
-    /// Per multiplex: the mixer phase and its step, radians.
-    phases: Vec<f64>,
-    steps: Vec<f64>,
+    /// Per multiplex: the mixer's current rotation (cos, sin) and the step's, both on
+    /// the unit circle; one complex multiply per sample, no `sin_cos` in the loops.
+    phasors: Vec<(f64, f64)>,
+    steps: Vec<(f64, f64)>,
     /// The composite at `rate`, interleaved I/Q.
     mix: Vec<f32>,
     /// One multiplex's resampled frame, reused.
@@ -40,7 +49,7 @@ impl Combiner {
     pub fn new(group: &GroupPlan, quality: ResamplerSetting) -> Result<Self> {
         let rate = group.intermediate_hz.unwrap_or(group.sample_rate_hz);
         let mut stages = Vec::with_capacity(group.multiplexes.len());
-        let mut phases = Vec::with_capacity(group.multiplexes.len());
+        let mut phasors = Vec::with_capacity(group.multiplexes.len());
         let mut steps = Vec::with_capacity(group.multiplexes.len());
         for m in &group.multiplexes {
             stages.push(if rate == 48_000 {
@@ -51,15 +60,15 @@ impl Combiner {
             // Where the multiplex sits relative to the group centre, before the group's
             // IF moves the whole stream.
             let offset_hz = m.offset_hz - group.if_offset_hz;
-            phases.push(0.0);
-            steps.push(TAU * offset_hz / f64::from(rate));
+            phasors.push((1.0, 0.0));
+            steps.push(sin_cos(TAU * offset_hz / f64::from(rate)));
         }
         let shared = if rate == group.sample_rate_hz {
             None
         } else {
             Some(Resampler::new(rate, group.sample_rate_hz, 2, quality.quality()).map_err(StationError::Output)?)
         };
-        Ok(Self { stages, phases, steps, mix: Vec::new(), scratch: Vec::new(), shared })
+        Ok(Self { stages, phasors, steps, mix: Vec::new(), scratch: Vec::new(), shared })
     }
 
 
@@ -70,7 +79,7 @@ impl Combiner {
 
     /// Add multiplex `index`'s 48 kHz interleaved I/Q frame to the composite.
     pub fn push(&mut self, index: usize, samples: &[f32]) {
-        let Self { stages, scratch, mix, phases, steps, .. } = self;
+        let Self { stages, scratch, mix, phasors, steps, .. } = self;
         let stage = &mut stages[index];
         scratch.clear();
         match stage {
@@ -80,21 +89,20 @@ impl Combiner {
         if mix.len() < scratch.len() {
             mix.resize(scratch.len(), 0.0);
         }
-        let mut phase = phases[index];
-        let step = steps[index];
+        let (mut cos, mut sin) = phasors[index];
+        let (step_cos, step_sin) = steps[index];
         for (n, &[i, q]) in scratch.as_chunks::<2>().0.iter().enumerate() {
-            let (sin, cos) = phase.sin_cos();
             let (i, q) = (f64::from(i), f64::from(q));
             mix[2 * n] += (i * cos - q * sin) as f32;
             mix[2 * n + 1] += (i * sin + q * cos) as f32;
-            phase += step;
-            if phase >= TAU {
-                phase -= TAU;
-            } else if phase < 0.0 {
-                phase += TAU;
+            let (nc, ns) = (cos * step_cos - sin * step_sin, cos * step_sin + sin * step_cos);
+            (cos, sin) = (nc, ns);
+            if n & RENORMALIZE_MASK == RENORMALIZE_MASK {
+                let m = (cos * cos + sin * sin).sqrt();
+                (cos, sin) = (cos / m, sin / m);
             }
         }
-        phases[index] = phase;
+        phasors[index] = (cos, sin);
     }
 
     /// Finish the frame: the composite at the radio's rate, interleaved I/Q.
@@ -125,7 +133,7 @@ impl Combiner {
 
     /// Every per-multiplex stage's tail, shifted and summed into [`Self::mix`].
     fn mix_tail(&mut self) {
-        let Self { stages, scratch, mix, phases, steps, .. } = self;
+        let Self { stages, scratch, mix, phasors, steps, .. } = self;
         mix.clear();
         for (i, stage) in stages.iter_mut().enumerate() {
             let Some(r) = stage else { continue };
@@ -134,21 +142,20 @@ impl Combiner {
             if mix.len() < scratch.len() {
                 mix.resize(scratch.len(), 0.0);
             }
-            let step = steps[i];
-            let mut phase = phases[i];
+            let (step_cos, step_sin) = steps[i];
+            let (mut cos, mut sin) = phasors[i];
             for (n, &[re, im]) in scratch.as_chunks::<2>().0.iter().enumerate() {
-                let (sin, cos) = phase.sin_cos();
                 let (iv, qv) = (f64::from(re), f64::from(im));
                 mix[2 * n] += (iv * cos - qv * sin) as f32;
                 mix[2 * n + 1] += (iv * sin + qv * cos) as f32;
-                phase += step;
-                if phase >= TAU {
-                    phase -= TAU;
-                } else if phase < 0.0 {
-                    phase += TAU;
+                let (nc, ns) = (cos * step_cos - sin * step_sin, cos * step_sin + sin * step_cos);
+                (cos, sin) = (nc, ns);
+                if n & RENORMALIZE_MASK == RENORMALIZE_MASK {
+                    let m = (cos * cos + sin * sin).sqrt();
+                    (cos, sin) = (cos / m, sin / m);
                 }
             }
-            phases[i] = phase;
+            phasors[i] = (cos, sin);
         }
     }
 }

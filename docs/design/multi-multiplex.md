@@ -192,6 +192,8 @@ services about 5 %, and a per-multiplex stage at `Fi` about 55 % x `Fi` / 2 Msps
 - 18 and 20 kHz multiplexes need `balanced` (about four times the resampler) and do not
   scale past one carrier on a Pi.
 - More services add about 1-2 points each; RAM is a few MB per multiplex.
+- The mixer is a recursive phasor: one complex multiply per sample, renormalized every
+  4096 samples, so the shift adds little next to the resamplers.
 
 These are predictions; after the implementation, run a `step0`-style measurement with
 1, 2 and 4 multiplexes (9/10 kHz: a narrow group, 140 kHz and the 1 MHz span) on a Pi 4
