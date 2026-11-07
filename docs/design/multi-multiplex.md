@@ -87,22 +87,29 @@ multiplex 2: services -> MSC frame -> DRM modulator (48 kHz) -> upsample to Fi
                                                            HackrfSink (drain, recoveries)
 ```
 
-- **One resampler, not one per multiplex.** The 48 kHz -> 2 Msps resampler is the
-  dominant cost (about 55 % of one core on a Pi 4B with `fast`); it works on the sum,
-  so N does not multiply it.
-- **Intermediate rate `Fi`** is the smallest of 48, 96 and 192 kHz that covers the
-  group's span (twice the highest offset plus a margin):
+- **The analog TX filter is the real passband.** The sink sets the HackRF's baseband
+  filter to `3/4 x sample_rate_hz` (clamped to 1.75-28 MHz), so at 2 Msps the usable
+  band is about +-875 kHz, not +-1 MHz; `plan.rs` checked `sample_rate_hz / 2`, which
+  was 25 % too optimistic. The plan uses the same bandwidth as the sink now.
+- **The design limit is a separation of at most 1 MHz between the outermost
+  carriers.** Inside that limit the span decides the strategy:
 
-  | Group span | `Fi` |
-  |---|---|
-  | up to 24 kHz (e.g. 2 x 10 kHz at 10 kHz spacing) | 48 kHz |
-  | up to 48 kHz (2 x 10 kHz at 20 kHz spacing) | 96 kHz |
-  | up to 96 kHz (4 x 10 kHz at 20 kHz spacing -> 70 kHz) | 192 kHz |
+  | Separation of the outermost carriers | Strategy | Cost |
+  |---|---|---|
+  | up to 24 / 48 / 96 kHz | mix at an intermediate rate `Fi` (48, 96 or 192 kHz), then **one** shared resampler `Fi -> sample_rate_hz` | the resampler once (about 55 % of one Pi core with `fast`), independent of N |
+  | 96 kHz - 1 MHz | each multiplex resampled 48 kHz -> `sample_rate_hz` on its own, mixed and summed at `sample_rate_hz` | N x the resampler (about N x 55 %), one thread per multiplex |
 
+  The cheap strategy works only while the whole group fits below `Fi / 2`; a 1 MHz
+  span needs the composite at 2 Msps, i.e. a resampler per multiplex. On a Pi 4 that
+  is comfortable for two carriers and marginal for four (see the load table). A
+  polyphase/FFT channelizer would make wide spans cheap, but that is a separate piece
+  of work and is out of scope here.
 - **Local oscillator.** One LO for the group, `LO = group centre - if_offset_hz` (as
   today, `if_offset_hz` keeps the group off the DC spike and the LO leakage). Each
-  multiplex is shifted by `frequency_hz - LO`. The 2 Msps passband (about +-1 MHz)
-  gives plenty of room; the constraint is the DC spike, not the edges.
+  multiplex is shifted by `frequency_hz - LO`. With the cheap strategy keep the
+  existing -250 kHz IF; a wide group has to straddle the DC, so `if_offset_hz` goes to
+  0 and the multiplexes themselves leave a gap around the LO (the DC-spike keep-out is
+  per multiplex).
 - **Pacing and stop** stay as they are: one clock, one drain, one writer thread.
 
 ## Plan and validation
@@ -113,7 +120,7 @@ The plan (`decdrm tx --check`) prints the group and one line per multiplex:
 hackrf: 25.7700 MHz (LO 25.5200 MHz + IF -250 kHz), 2 Msps, TX gain 0 dB, resampler fast
   multiplex 1: 25.7600 MHz, mode B, 10 kHz, IF -260 kHz, services: Programme A
   multiplex 2: 25.7800 MHz, mode B, 10 kHz, IF -240 kHz, services: Programme B
-  span: 30 kHz of a 2000 kHz passband, intermediate rate 96 kHz
+  span: 30 kHz of a 1750 kHz passband, intermediate rate 96 kHz, one composite resampler
 ```
 
 It must check, per multiplex and for the group:
@@ -123,7 +130,10 @@ It must check, per multiplex and for the group:
   per multiplex, not just for the group's centre);
 - no two multiplexes overlap (a 10 kHz channel next to another one is fine, on top of
   it is not);
-- the whole group inside the sample rate with a margin;
+- the separation of the outermost carriers at most 1 MHz (a hard error), and which
+  strategy that span selects (printed in the plan line);
+- every multiplex inside half the analog filter's bandwidth (3/4 of the sample rate,
+  clamped to 1.75-28 MHz) of the LO, with a margin;
 - mode/occupancy of each multiplex (as today, per channel);
 - the worst case of the resampler: `fast` stays transparent only for the
   4.5-10 kHz occupancies (the existing warning, now per multiplex);
@@ -155,6 +165,9 @@ Extrapolated from the measured single-multiplex numbers (`fast`, 2 Msps, 1.8 GHz
 throttling): the resampler is about 55 % of one core, a multiplex with 1-3 services
 about 3-5 %, the mixing and the interpolation about 1-3 % per multiplex.
 
+**Cheap strategy, the group below 96 kHz** (e.g. 2 x 10 kHz at 20 kHz spacing, the
+intended use): one shared resampler, so N barely matters.
+
 | Multiplexes | One core, % | Real-time margin | Note |
 |---|---|---|---|
 | 1 | ~60 | 1.6x | measured |
@@ -162,22 +175,33 @@ about 3-5 %, the mixing and the interpolation about 1-3 % per multiplex.
 | 3 | ~72 | 1.4x | |
 | 4 | ~78 | 1.3x | about the limit for a comfortable margin |
 
+**Wide spans, 96 kHz - 1 MHz**: a resampler per multiplex, one thread each.
+
+| Multiplexes | One core, % | Threads | Note |
+|---|---|---|---|
+| 2 | ~120 | 2 | fine on a Pi 4 |
+| 3 | ~180 | 3 | tight, leaves one core for everything else |
+| 4 | ~240 | 4 | no margin; a PC is the realistic host |
+
 - More services per multiplex add about 1-2 percentage points each; four multiplexes
   with three services each add about 10 points.
-- **One resampler per multiplex instead of one shared** would cost N x 55 %: 110 % at
-  two, 220 % at four. That is the mistake to avoid.
+- The per-multiplex resampler is the price of a span above 96 kHz, not a mistake: the
+  cheap path cannot carry a 1 MHz group, because the composite would have to be
+  generated at 2 Msps before the mixing.
 - `balanced` costs about 200 % already at one multiplex (half of real time) and stays
   unusable on the Pi whatever N is; the Pi needs `fast`.
 - RAM: a few MB per multiplex plus the queue; not a concern.
 
 These are predictions; after the implementation, run a `step0`-style measurement with
-1, 2 and 4 multiplexes and put the measured numbers here.
+1, 2 and 4 multiplexes (both strategies) and put the measured numbers here.
 
 ## Work breakdown
 
-1. Config, backward compatibility, validation, the plan - about 1 day.
+1. Config, backward compatibility, validation (including the 1 MHz limit and the
+   filter-edge check), the plan - about 1 day.
 2. Station: N mux/modulator pipelines, the shared clock, the composite mixer and the
-   single resampler - about 2 days.
+   single resampler; the per-multiplex resampler path for wide spans, with a thread per
+   multiplex - about 2.5 days.
 3. Status, banner, drain (unchanged) - about half a day.
 4. Tests (config, plan, spectrum, smoke) - about 1 day.
 5. Docs (USER_GUIDE, BUILD.md with the load table, FORK.md) and an example station file
@@ -192,6 +216,9 @@ These are predictions; after the implementation, run a `step0`-style measurement
   existing station files must work unchanged.
 - **LO placement**: one LO for the group; `if_offset_hz` is the group centre. The
   DC-spike check applies to every multiplex.
+- **Spacing limit**: the outermost carriers at most 1 MHz apart; the plan rejects more.
+  At 2 Msps that is 1 MHz of the 1.75 MHz analog filter, so a wide group has to sit on
+  the LO with a gap in the middle rather than at the default -250 kHz IF.
 - **Level**: `level_dbfs` per multiplex; the plan warns when the sum clips.
 - **26 MHz radio side** (documentation only): the HackRF is weak and spurious at the
   bottom of its range (a low-pass filter helps, the second harmonic lands at 52 MHz),
