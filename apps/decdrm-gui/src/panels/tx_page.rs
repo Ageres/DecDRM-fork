@@ -251,6 +251,7 @@ impl TxPage {
             hackrf_if_khz: Some(settings.tx_hackrf_if_khz),
             hackrf_gain_db: settings.tx_hackrf_gain_db,
             hackrf_amp: settings.tx_hackrf_amp,
+            hackrf_resampler: settings.tx_hackrf_resampler,
         }
     }
 
@@ -897,6 +898,10 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                     ),
                 );
                 ui.end_row();
+                value(ui, "Resampler", h.resampler.to_string()).on_hover_text(
+                    "Quality of the 48 kHz -> sample-rate interpolation: \"fast\" is transparent for the 9/10 kHz occupancies and is what a Raspberry Pi 4 needs at 2 Msps.",
+                );
+                ui.end_row();
                 value(ui, "Sent", format!("{:.1} s", h.transmitted_s))
                     .on_hover_text("Signal handed to the radio since it started transmitting.");
                 ui.end_row();
@@ -912,6 +917,13 @@ fn output_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                 ui.label(if h.underruns > 0 { underruns.color(pal.error) } else { underruns })
                     .on_hover_text(
                         "Times the station fell behind and left the radio's buffer empty — each risks a gap on air; should stay 0.",
+                    );
+                ui.end_row();
+                let recoveries = RichText::new(h.recoveries.to_string()).monospace();
+                ui.label(RichText::new("Recoveries").weak());
+                ui.label(if h.recoveries > 0 { recoveries.color(pal.error) } else { recoveries })
+                    .on_hover_text(
+                        "Times the transmitter was restarted after a USB write failure (an underrun can wedge the radio); should stay 0, and the station keeps going when it happens.",
                     );
                 ui.end_row();
             }
@@ -1361,6 +1373,27 @@ fn output_hackrf_picker(
     .on_hover_text("HackRF transmit VGA gain, 0–47 dB.");
     ui.checkbox(&mut settings.tx_hackrf_amp, "RF amp")
         .on_hover_text("The HackRF's 14 dB RF amplifier.");
+    let resampler_text = match settings.tx_hackrf_resampler {
+        None => "resampler: as in file".to_string(),
+        Some(q) => format!("resampler: {q}"),
+    };
+    egui::ComboBox::from_id_salt("tx_hackrf_resampler")
+        .selected_text(resampler_text)
+        .width(180.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut settings.tx_hackrf_resampler, None, "as in file");
+            for q in [
+                decdrm_station::ResamplerSetting::Fast,
+                decdrm_station::ResamplerSetting::Balanced,
+                decdrm_station::ResamplerSetting::High,
+            ] {
+                ui.selectable_value(&mut settings.tx_hackrf_resampler, Some(q), q.to_string());
+            }
+        })
+        .response
+        .on_hover_text(
+            "The 48 kHz -> sample-rate interpolation filter. \"as in file\" uses the station's [output.hackrf] resampler (balanced when it sets none); on a Raspberry Pi 4 choose \"fast\" at 2 Msps. It is transparent for the 9/10 kHz occupancies.",
+        );
     if other_outputs {
         ui.label(RichText::new("file/sound card ignored").weak())
             .on_hover_text(

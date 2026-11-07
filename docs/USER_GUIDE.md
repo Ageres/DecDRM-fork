@@ -691,6 +691,7 @@ tx_gain_db = 40            # transmit VGA gain, 0–47 dB
 amp_enable = false         # the 14 dB RF amplifier
 # serial = "…23cc7"        # which HackRF (any one if omitted)
 # buffer_s = 1.0           # signal buffered before transmitting starts
+# resampler = "balanced"   # 48 kHz -> sample_rate_hz interpolation: "fast", "balanced" or "high"
 ```
 
 Everything is optional but `format`: the defaults above transmit a 1.53 MHz
@@ -704,11 +705,28 @@ radio starts, so a burst of encoding delay does not leave a gap on air (0.05–1
 queue is capped at 64 MB, so a high sample rate shortens it).
 
 Keep `sample_rate_hz` at 2 Msps (or up to about 4): the station resamples its 48 kHz
-baseband to the radio's rate on its own thread, and from 8 Msps upwards a typical
-machine cannot hand two bytes per sample to USB in real time. The radio then underruns —
-gaps on air, counted as *underruns* in the status — and can stop taking data, which ends
-the transmission with a write timeout. A higher rate buys nothing for a DRM channel; it
-only widens the passband. The plan printed by `decdrm tx --check` says so too.
+baseband to the radio's rate on every frame (the USB writes then run on the writer
+thread), and from 8 Msps upwards a typical machine cannot keep up in real time. The
+radio then underruns — gaps on air, counted as *underruns* in the status — and can stop
+taking data, which ends the transmission with a write timeout. The writer now restarts
+the transmitter a few times after such a failure (counted as *recoveries* in the
+status), so a single glitch may pass. A higher rate buys
+nothing for a DRM channel; it only widens the passband. The plan printed by `decdrm tx
+--check` says so too.
+
+`resampler` picks the interpolation filter: `"balanced"` (the default, 256 taps),
+`"high"` (512 taps, the best images) or `"fast"` (64 taps), which costs about eight
+times less. On a **Raspberry Pi 4** the default keeps only about half of real time at
+2 Msps — the radio underruns and may stop taking data — so set `resampler = "fast"`
+there; it is transparent for the 9 and 10 kHz occupancies, while the 18 and 20 kHz ones
+reach the edge of its passband (keep `"balanced"` for them). `buffer_s` only postpones
+the problem: the deficit is continuous.
+
+On a **Raspberry Pi** the repository's `scripts/pi/stationctl` keeps a station running in
+a detached `screen` session: `start`, `stop`, `restart`, `status` and `logs` (no root;
+the station survives the SSH session, and one that exits with an error is restarted).
+`start --log` appends to `station/logs/decdrm-<name>.log`. The
+[build guide](BUILD.md#raspberry-pi-4-64-bit) has the details.
 
 The GUI's HackRF mode offers **IF presets** from −950 to +950 kHz in 50 kHz steps:
 negative puts the local oscillator above the channel (the default −250 kHz), positive
@@ -718,6 +736,11 @@ shown greyed out, with the frequency span it would need; a value from the statio
 that is not on the grid is kept and shown as it is. As with the frequency, gain and
 amplifier, the choice is an override — the station file's `if_offset_hz` still applies
 to `decdrm tx` and to "As configured".
+
+The **resampler** quality is a quick field too: **as in file** (whatever
+`[output.hackrf] resampler` says; balanced when it sets none), **fast**, **balanced** or
+**high**. As with the other quick fields, a choice you make here wins over the file; a
+Raspberry Pi 4 wants **fast** at 2 Msps.
 
 With the HackRF output the **Output spectrum** plot shows absolute frequencies: its
 axis reads `frequency (kHz on air)`, the DC carrier sits at the nominal frequency, and
@@ -925,3 +948,5 @@ it records ALSA's `default` device; route that to the cable's monitor as describ
 | DAC weights | `models/dac_24khz/model.safetensors` (see `decdrm models list`) |
 | KiwiSDR list (*Find…*) | `kiwi/kiwisdr_com.js` next to the GUI settings (`%APPDATA%\decdrm\kiwi` on Windows) |
 | Broadcast schedules | `schedule/` next to the GUI settings (`%APPDATA%\decdrm\schedule` on Windows): `sked-a26.csv` (EiBi), `DRMSchedule.ini` (Dream), optional `sources.toml`; `decdrm schedule --dir DIR` uses another folder |
+| Station logs (`scripts/pi/stationctl start --log`) | `station/logs/decdrm-<name>.log` in the checkout, rotated to `.log.1` at 5 MB (`STATIONCTL_LOG_MAX`); see the [build guide](BUILD.md#raspberry-pi-4-64-bit) |
+| Station session markers (`stationctl`) | `station/.stationctl/`: `<session>.logging` (whether the log is on) and `<session>.restarts` (restart count); `stop` removes both |

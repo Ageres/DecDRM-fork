@@ -92,13 +92,14 @@ pub fn run(a: TxArgs) -> Result<()> {
     }
     if let Some(h) = &station.status().hackrf {
         println!(
-            "hackrf: {:.4} MHz (LO {:.4} MHz + IF {:.0} kHz), {} Msps, TX gain {} dB{}",
+            "hackrf: {:.4} MHz (LO {:.4} MHz + IF {:.0} kHz), {} Msps, TX gain {} dB{}, resampler {}",
             h.frequency_hz as f64 / 1e6,
             h.lo_hz as f64 / 1e6,
             h.if_offset_hz / 1e3,
             h.sample_rate_hz as f64 / 1e6,
             h.tx_gain_db,
-            if h.amp { ", RF amp on" } else { "" }
+            if h.amp { ", RF amp on" } else { "" },
+            h.resampler
         );
         println!(
             "        occupied band: {:.1}..{:.1} kHz",
@@ -154,13 +155,15 @@ fn print_status(s: &StationStatus) {
         if s.device.is_some() { format!(", {} underruns", s.device_underruns) } else { String::new() }
     );
     if let Some(h) = &s.hackrf {
-        let underruns = if h.underruns > 0 {
-            format!(", {} underruns", h.underruns)
-        } else {
-            String::new()
-        };
+        let mut extra = String::new();
+        if h.underruns > 0 {
+            extra.push_str(&format!(", {} underruns", h.underruns));
+        }
+        if h.recoveries > 0 {
+            extra.push_str(&format!(", {} recoveries", h.recoveries));
+        }
         println!(
-            "          hackrf: {:.1} s transmitted, {:.1} s buffered{underruns}",
+            "          hackrf: {:.1} s transmitted, {:.1} s buffered{extra}",
             h.transmitted_s, h.queued_s
         );
     }
