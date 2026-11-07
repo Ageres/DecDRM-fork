@@ -914,6 +914,18 @@ fn multiplex_group_checks() {
     // 1.1 MHz apart: over the design limit.
     let p = problems_of(multiplex_text(25_000_000, 26_100_000, -18, ""));
     assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
+    // Exactly the limit passes (4 Msps: the analog filter has to hold it too), a hair
+    // over does not.
+    let at_limit = multiplex_text(25_000_000, 26_000_000, -18, "").replace("sample_rate_hz = 2_000_000", "sample_rate_hz = 4_000_000");
+    assert_eq!(problems_of(at_limit), Vec::<String>::new());
+    let p = problems_of(multiplex_text(25_000_000, 26_000_001, -18, ""));
+    assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
+    // The level line: -17.0 dBFS twice sums to -13.99, over -14 dBFS of crest; -17.1
+    // stays under it.
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, ""));
+    assert!(has(&p, "set level_dbfs"), "{p:?}");
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, "").replace("-17", "-17.1"));
+    assert!(!has(&p, "set level_dbfs"), "{p:?}");
     // 5 kHz apart: the 10 kHz channels overlap.
     let p = problems_of(multiplex_text(25_760_000, 25_765_000, -18, ""));
     assert!(has(&p, "overlap"), "{p:?}");

@@ -239,24 +239,24 @@ input = { tone_hz = 880.0 }
     /// Combine `text`'s multiplexes (a DC frame each) and return the plan and the
     /// radio-rate output. The frames go through [`Combiner::push_frame`], as a station
     /// sends them.
-    fn combine(text: &str) -> (crate::plan::GroupPlan, Vec<f32>) {
+    fn combine(text: &str, frame_samples: usize, frames: usize) -> (crate::plan::GroupPlan, Vec<f32>) {
         let cfg = StationConfig::from_toml_str(text).unwrap();
         let crate::plan::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
             panic!("expected a group")
         };
         let mut combiner = Combiner::new(&group, crate::config::ResamplerSetting::Fast).unwrap();
         let mut out = Vec::new();
-        let mut frames = Vec::new();
-        for _ in 0..2 {
-            frames.clear();
+        let mut buffers = Vec::new();
+        for _ in 0..frames {
+            buffers.clear();
             for _ in 0..group.multiplexes.len() {
-                let mut frame = vec![0.0f32; 19_200 * 2];
+                let mut frame = vec![0.0f32; frame_samples * 2];
                 for z in frame.as_chunks_mut::<2>().0 {
                     z[0] = 1.0;
                 }
-                frames.push(frame);
+                buffers.push(frame);
             }
-            let refs: Vec<&[f32]> = frames.iter().map(|f| f.as_slice()).collect();
+            let refs: Vec<&[f32]> = buffers.iter().map(|f| f.as_slice()).collect();
             combiner.begin_frame();
             combiner.push_frame(&refs);
             combiner.finish_frame(&mut out);
@@ -264,34 +264,33 @@ input = { tone_hz = 880.0 }
         (group, out)
     }
 
+    /// The composite's magnitude at `hz` (a DC carrier of 1.0 gives about 1 at its
+    /// offset).
+    fn magnitude_at(group: &crate::plan::GroupPlan, out: &[f32], hz: f64) -> f64 {
+        let step = TAU * hz / f64::from(group.sample_rate_hz);
+        let (mut re, mut im, mut phase) = (0.0f64, 0.0f64, 0.0f64);
+        for &[i, q] in out.as_chunks::<2>().0 {
+            let (sin, cos) = phase.sin_cos();
+            re += f64::from(i) * cos + f64::from(q) * sin;
+            im += f64::from(q) * cos - f64::from(i) * sin;
+            phase += step;
+        }
+        (re * re + im * im).sqrt() / (out.len() as f64 / 2.0)
+    }
+
     /// Every multiplex's plain carrier lands at its offset around the group's centre
     /// (the group's IF is not applied here), and there is nothing at the centre.
     fn assert_on_their_offsets(group: &crate::plan::GroupPlan, out: &[f32]) {
-        let rate = f64::from(group.sample_rate_hz);
-        let magnitude = |hz: f64| {
-            let step = TAU * hz / rate;
-            let (mut re, mut im, mut phase) = (0.0f64, 0.0f64, 0.0f64);
-            for &[i, q] in out.as_chunks::<2>().0 {
-                let (sin, cos) = phase.sin_cos();
-                re += f64::from(i) * cos + f64::from(q) * sin;
-                im += f64::from(q) * cos - f64::from(i) * sin;
-                phase += step;
-            }
-            (re * re + im * im).sqrt() / (out.len() as f64 / 2.0)
-        };
         let mut strongest = 0.0f64;
         for m in &group.multiplexes {
             let offset = m.offset_hz - group.if_offset_hz;
-            let peak = magnitude(offset);
-            assert!(
-                peak > 10.0 * magnitude(offset + 5_000.0),
-                "{offset} Hz: {peak} against {}",
-                magnitude(offset + 5_000.0)
-            );
+            let peak = magnitude_at(group, out, offset);
+            let beside = magnitude_at(group, out, offset + 5_000.0);
+            assert!(peak > 10.0 * beside, "{offset} Hz: {peak} against {beside}");
             strongest = strongest.max(peak);
         }
         // A mixer that did not shift would leave the carriers at DC.
-        let centre = magnitude(0.0);
+        let centre = magnitude_at(group, out, 0.0);
         assert!(centre < strongest / 10.0, "nothing at the centre: {centre} against {strongest}");
     }
 
@@ -299,7 +298,7 @@ input = { tone_hz = 880.0 }
     /// at its offset.
     #[test]
     fn two_multiplexes_land_on_their_offsets() {
-        let (group, out) = combine(TWO);
+        let (group, out) = combine(TWO, 19_200, 2);
         assert!(group.intermediate_hz.is_some(), "one shared resampler");
         assert_on_their_offsets(&group, &out);
     }
@@ -308,8 +307,19 @@ input = { tone_hz = 880.0 }
     /// stage, the stages run on their own threads, and the pair still lands right.
     #[test]
     fn a_wide_pair_runs_a_stage_per_multiplex() {
-        let (group, out) = combine(&TWO.replace("25_780_000", "25_950_000"));
+        let (group, out) = combine(&TWO.replace("25_780_000", "25_950_000"), 19_200, 2);
         assert!(group.intermediate_hz.is_none(), "a stage per multiplex");
         assert_on_their_offsets(&group, &out);
+    }
+
+    /// The mixer's phase carries on from frame to frame: 19 201 samples are 0.2 of a
+    /// cycle short of an integer at 10 kHz, so a reset would cancel the tone over 20
+    /// frames (an ideal shifted DC correlates to 1).
+    #[test]
+    fn the_mixer_keeps_its_phase_across_frames() {
+        let (group, out) = combine(TWO, 19_201, 20);
+        let offset = group.multiplexes[0].offset_hz - group.if_offset_hz;
+        let peak = magnitude_at(&group, &out, offset);
+        assert!(peak > 0.9, "{offset} Hz across frames: {peak}");
     }
 }

@@ -52,14 +52,30 @@ impl GroupStation {
         settings.if_offset_hz = group.if_offset_hz;
         let sink = HackrfSink::open_resampled(&settings)?;
         let combiner = Combiner::new(&group, h.resampler)?;
-        let mut stations = Vec::with_capacity(group.multiplexes.len());
-        for m in &group.multiplexes {
-            let mut sub = m.cfg.clone();
-            // The multiplex's samples go to the combiner, not to a sink.
-            sub.output.file = None;
-            sub.output.device = None;
-            sub.output.hackrf = None;
-            stations.push(Station::with_plan_and_stop(sub, m.plan.clone(), stop.clone())?);
+        // Every station waits for its first web-stream audio (up to 20 s), so they
+        // start together: three streams must not add up to a minute.
+        let started = std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .multiplexes
+                .iter()
+                .map(|m| {
+                    let mut sub = m.cfg.clone();
+                    // The multiplex's samples go to the combiner, not to a sink.
+                    sub.output.file = None;
+                    sub.output.device = None;
+                    sub.output.hackrf = None;
+                    let plan = m.plan.clone();
+                    let stop = stop.clone();
+                    scope.spawn(move || Station::with_plan_and_stop(sub, plan, stop))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
+        });
+        let mut stations = Vec::with_capacity(started.len());
+        for started in started {
+            stations.push(started.unwrap_or_else(|_| {
+                Err(StationError::config("a multiplex's station panicked while starting"))
+            })?);
         }
         let mut s = Self {
             group,

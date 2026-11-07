@@ -165,13 +165,14 @@ fn print_status(s: &StationStatus) {
     );
     for (i, m) in s.multiplexes.iter().enumerate() {
         println!(
-            "          multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms, SDC {}/{} bytes",
+            "          multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms, {} frames, SDC {}/{} bytes",
             i + 1,
             m.frequency_hz as f64 / 1e6,
             m.mode,
             m.services.len(),
             if m.services.len() == 1 { "" } else { "s" },
             m.output_rms_dbfs,
+            m.frames,
             m.sdc_bytes_used,
             m.sdc_capacity
         );

@@ -69,7 +69,8 @@ pub struct StationStatus {
     pub sdc_capacity: usize,
     /// The last time and date sent in the SDC.
     pub time_sent: Option<String>,
-    /// Per service, in Short Id order (a modulator: the services of the MDI).
+    /// Per service, in Short Id order (a modulator: the services of the MDI; a group:
+    /// the first multiplex's, the others are in [Self::multiplexes]).
     pub services: Vec<ServiceStatus>,
     /// A modulator (`[mdi]`): the MDI input and what was transmitted of it.
     pub mdi: Option<crate::modulator::ModulatorStatus>,
