@@ -43,8 +43,12 @@ impl GroupStation {
             return Err(StationError::config("a group needs [output.hackrf] (one stream, one radio)"));
         };
         // The radio sends the group's centre; its IF is the group's.
+        let centre_hz = (group.lo_hz + group.if_offset_hz).round();
+        if !(1_000_000.0..=6_000_000_000.0).contains(&centre_hz) {
+            return Err(StationError::config("the group's centre is outside the HackRF's 1 MHz-6 GHz range"));
+        }
         let mut settings = h.clone();
-        settings.frequency_hz = (group.lo_hz + group.if_offset_hz).round().max(1_000_000.0) as u64;
+        settings.frequency_hz = centre_hz as u64;
         settings.if_offset_hz = group.if_offset_hz;
         let sink = HackrfSink::open_resampled(&settings)?;
         let combiner = Combiner::new(&group, h.resampler)?;
@@ -102,6 +106,7 @@ impl GroupStation {
             self.sink.write(&self.samples, &self.stop)?;
         }
         self.sink.drain(&self.stop)?;
+        self.update_status();
         Ok(self.status)
     }
 
@@ -159,6 +164,9 @@ impl GroupStation {
         st.device = None;
         st.device_underruns = 0;
         st.device_buffer_ms = None;
+        // The 48 kHz stages of the multiplexes do not see the 8-bit conversion: the
+        // sink counts the samples it had to clip.
+        st.clipped_samples = self.sink.clipped_samples();
         st.multiplexes = self
             .group
             .multiplexes

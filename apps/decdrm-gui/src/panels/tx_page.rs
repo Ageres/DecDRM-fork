@@ -612,6 +612,7 @@ impl TxPage {
                     self.hackrf_scan_rx.is_some(),
                     &mut self.hackrf_scan_wanted,
                     self.other_outputs,
+                    self.text.contains("[[multiplex]]"),
                 ),
             }
             ui.separator();
@@ -1288,6 +1289,7 @@ fn output_hackrf_picker(
     scanning: bool,
     scan_wanted: &mut bool,
     other_outputs: bool,
+    grouped: bool,
 ) {
     /// Broadcast bands to start from (kHz): a little below each band's middle, so the
     /// whole channel stays inside it (40 kHz in the narrow 75 m and 15 m, where 70
@@ -1330,11 +1332,19 @@ fn output_hackrf_picker(
             "Broadcast bands, a little below each band's middle so the whole channel stays inside the band; drag the frequency for anything else.",
         );
     // The radio's span less the IF: the channel and the local oscillator must both
-    // stay inside it (1 MHz … 6 GHz), so the field cannot leave it either.
+    // stay inside it (1 MHz : 6 GHz), so the field cannot leave it either. With
+    // [[multiplex]] the field is the first multiplex's frequency and the oscillator
+    // depends on all of them: the plan reports an out-of-range group, so no clamp.
     let if_offset_hz = settings.tx_hackrf_if_khz * 1_000.0;
-    let (min_hz, max_hz) = decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz);
+    let (min_hz, max_hz) = if grouped {
+        (1_000_000, 6_000_000_000)
+    } else {
+        decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz)
+    };
     let (min_khz, max_khz) = (min_hz as f64 / 1_000.0, max_hz as f64 / 1_000.0);
-    settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
+    if !grouped {
+        settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
+    }
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
             .range(min_khz..=max_khz)

@@ -59,7 +59,7 @@
 //! SDC type 9 carries.
 
 use crate::config::{
-    AppKind, Codec, HackrfSettings, Part, ResamplerSetting, SbrRatio, SignalFormat, StationConfig,
+    AppKind, ChannelSettings, Codec, HackrfSettings, Part, ResamplerSetting, SbrRatio, SignalFormat, StationConfig,
 };
 use crate::error::{ConfigProblems, Result, StationError};
 use crate::sdc;
@@ -905,6 +905,9 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     }
     if cfg.mdi.is_some() {
         p.push("multiplexes: [mdi] cannot be combined with [[multiplex]] yet");
+    }
+    if cfg.channel != ChannelSettings::default() {
+        p.push("multiplexes: [channel] is not used with [[multiplex]] (each multiplex has its own mode, occupancy and protection)");
     }
     if cfg.output.file.is_some() || cfg.output.device.is_some() {
         p.push("multiplexes: with [[multiplex]] the output is [output.hackrf] (a composite file comes later)");

@@ -106,42 +106,51 @@ impl Combiner {
         }
     }
 
-    /// The tail of the last frames, for [`Station::finish`](crate::Station::finish).
+    /// The tail of the last frames, for [`Station::finish`](crate::Station::finish):
+    /// the per-multiplex stages' tails, through the shared resampler if there is one.
     pub fn flush(&mut self, out: &mut Vec<f32>) {
         out.clear();
-        match self.shared.as_mut() {
-            Some(r) => out.extend(r.flush()),
-            None => {
-                let Self { stages, scratch, mix, phases, steps, .. } = self;
-                mix.clear();
-                for (i, stage) in stages.iter_mut().enumerate() {
-                    let Some(r) = stage else { continue };
-                    scratch.clear();
-                    scratch.extend(r.flush());
-                    if mix.len() < scratch.len() {
-                        mix.resize(scratch.len(), 0.0);
-                    }
-                    let step = steps[i];
-                    let mut phase = phases[i];
-                    for (n, &[i, q]) in scratch.as_chunks::<2>().0.iter().enumerate() {
-                        let (sin, cos) = phase.sin_cos();
-                        let (iv, qv) = (f64::from(i), f64::from(q));
-                        mix[2 * n] += (iv * cos - qv * sin) as f32;
-                        mix[2 * n + 1] += (iv * sin + qv * cos) as f32;
-                        phase += step;
-                        if phase >= TAU {
-                            phase -= TAU;
-                        } else if phase < 0.0 {
-                            phase += TAU;
-                        }
-                    }
-                    phases[i] = phase;
-                }
-                out.extend_from_slice(mix);
-            }
+        self.mix_tail();
+        let Some(shared) = self.shared.as_mut() else {
+            out.extend_from_slice(&self.mix);
+            return;
+        };
+        let mix = std::mem::take(&mut self.mix);
+        if !mix.is_empty() {
+            shared.process_into(&mix, out);
         }
+        self.mix = mix;
+        out.extend(shared.flush());
     }
 
+    /// Every per-multiplex stage's tail, shifted and summed into [`Self::mix`].
+    fn mix_tail(&mut self) {
+        let Self { stages, scratch, mix, phases, steps, .. } = self;
+        mix.clear();
+        for (i, stage) in stages.iter_mut().enumerate() {
+            let Some(r) = stage else { continue };
+            scratch.clear();
+            scratch.extend(r.flush());
+            if mix.len() < scratch.len() {
+                mix.resize(scratch.len(), 0.0);
+            }
+            let step = steps[i];
+            let mut phase = phases[i];
+            for (n, &[re, im]) in scratch.as_chunks::<2>().0.iter().enumerate() {
+                let (sin, cos) = phase.sin_cos();
+                let (iv, qv) = (f64::from(re), f64::from(im));
+                mix[2 * n] += (iv * cos - qv * sin) as f32;
+                mix[2 * n + 1] += (iv * sin + qv * cos) as f32;
+                phase += step;
+                if phase >= TAU {
+                    phase -= TAU;
+                } else if phase < 0.0 {
+                    phase += TAU;
+                }
+            }
+            phases[i] = phase;
+        }
+    }
 }
 
 #[cfg(test)]

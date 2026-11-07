@@ -948,6 +948,11 @@ input = { tone_hz = 440.0 }
     cfg.output.device = Some("default".into());
     let p = cfg.validate_station().unwrap_err().problems().to_vec();
     assert!(has(&p, "[output.hackrf]"), "{p:?}");
+    // A top-level [channel] is not used with [[multiplex]].
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
+    cfg.channel = decdrm_station::ChannelSettings { occupancy: 2, ..Default::default() };
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "[channel] is not used"), "{p:?}");
     // An unknown key inside a multiplex is named by the plan (flatten turns serde's
     // unknown-field check off, so the parser cannot).
     let typo = multiplex_text(25_760_000, 25_780_000, -18, "").replace("occupancy = 3", "occupancyy = 3");
