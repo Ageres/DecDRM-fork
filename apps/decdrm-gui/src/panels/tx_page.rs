@@ -17,7 +17,7 @@ use crate::indicators::fmt_time;
 use crate::settings::{Settings, TxOutput};
 use crate::transmitter::TxSession;
 use crate::tx_config::{self, EXAMPLE_STATION, Overrides};
-use decdrm_station::{JournalineStatus, StationConfig, StationPlan, WebStreamState, WebStreamStatus};
+use decdrm_station::{JournalineStatus, ServiceStatus, StationConfig, StationPlan, WebStreamState, WebStreamStatus};
 use eframe::egui::{self, Color32, RichText, Ui};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use std::path::{Path, PathBuf};
@@ -1100,92 +1100,109 @@ fn services_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
     let s = &tx.snap.status;
     let live = tx.is_running() && tx.snap.started;
     card(ui, "Services", "", |ui| {
-        // A group carries one service list per multiplex; the block below is the first.
+        let mdi = s.mdi.is_some();
+        // A group: each multiplex's services under its own header.
         if !s.multiplexes.is_empty() {
+            if s.multiplexes.iter().all(|m| m.services.is_empty()) {
+                placeholder(ui, "The services appear when the transmitter starts.");
+                return;
+            }
             for (k, m) in s.multiplexes.iter().enumerate() {
+                if k > 0 {
+                    ui.separator();
+                }
                 ui.label(
                     RichText::new(format!(
-                        "multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms",
+                        "multiplex {}: {:.4} MHz, {}, {:.1} dBFS rms",
                         k + 1,
                         m.frequency_hz as f64 / 1e6,
                         m.mode,
-                        m.services,
-                        if m.services == 1 { "" } else { "s" },
                         m.output_rms_dbfs
                     ))
                     .weak(),
                 );
+                for (n, sv) in m.services.iter().enumerate() {
+                    if n > 0 {
+                        ui.separator();
+                    }
+                    service_entry(ui, sv, live, k, mdi, tx, pal);
+                }
             }
-            ui.separator();
+            return;
         }
         if s.services.is_empty() {
             placeholder(ui, "The services appear when the transmitter starts.");
             return;
         }
-        for (k, sv) in s.services.iter().enumerate() {
-            if k > 0 {
+        for (n, sv) in s.services.iter().enumerate() {
+            if n > 0 {
                 ui.separator();
             }
-            ui.horizontal(|ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().selection.bg_fill)
-                    .corner_radius(egui::CornerRadius::same(3))
-                    .inner_margin(egui::Margin::symmetric(6, 1))
-                    .show(ui, |ui| ui.label(RichText::new(sv.short_id.to_string()).monospace().strong().color(Color32::WHITE)));
-                ui.label(RichText::new(&sv.label).strong()).on_hover_text(format!("service id {:06X}", sv.service_id));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{:.2} kbit/s", sv.bitrate / 1000.0)).monospace());
-                });
-            });
-            if let Some(a) = &sv.audio
-                && s.mdi.is_some()
-            {
-                // A modulator's audio comes encoded with the MDI: no input, no levels.
-                ui.label(RichText::new(format!("{} \u{b7} from the MDI", a.codec)).weak());
-            } else if let Some(a) = &sv.audio {
-                let level = live.then_some((a.counters.input_rms_dbfs, a.counters.input_peak_dbfs));
-                meter_with_text(ui, ("tx_service_meter", sv.short_id), level, (ui.available_width() - 90.0).max(120.0), MeterKind::Audio);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("{} @ {:.1} kbit/s \u{b7} {}", a.codec, f64::from(a.encoder_bitrate) / 1000.0, a.input)).weak(),
-                    )
-                    .wrap(),
-                );
-                let mut notes = Vec::new();
-                if a.input_finished {
-                    notes.push("input ended".to_string());
-                }
-                if a.counters.frames_dropped > 0 {
-                    notes.push(format!("{} frames dropped", a.counters.frames_dropped));
-                }
-                if a.counters.encoder_errors > 0 {
-                    notes.push(format!("{} encoder errors", a.counters.encoder_errors));
-                }
-                if !notes.is_empty() {
-                    ui.colored_label(pal.error, notes.join(", "));
-                }
-                if let Some(w) = &a.web_stream {
-                    web_stream_status(ui, w, sv.short_id, pal);
-                }
-                if let Some(ppm) = a.counters.input_drift_ppm {
-                    ui.label(RichText::new(format!("following the input clock: {ppm:+.0} ppm")).weak().small());
-                }
-            }
-            for app in &sv.apps {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("+ {} \u{b7} {:.2} kbit/s", app.kind, app.bitrate / 1000.0)).weak());
-                    if let Some(j) = &app.journaline {
-                        journaline_status(ui, tx, j, live);
-                    }
-                });
-                if let Some(e) = app.journaline.as_ref().and_then(|j| j.error.as_ref()) {
-                    ui.add(egui::Label::new(RichText::new(format!("{e} (the pages before stay on the air)")).color(pal.error).small()).wrap());
-                }
-            }
+            service_entry(ui, sv, live, 0, mdi, tx, pal);
         }
     });
 }
 
+/// One service's block in the Services card: its Short Id and label, the input level,
+/// codec and state, and the data applications.
+fn service_entry(ui: &mut Ui, sv: &ServiceStatus, live: bool, mux: usize, mdi: bool, tx: &TxSession, pal: &Palette) {
+    ui.horizontal(|ui| {
+        egui::Frame::new()
+            .fill(ui.visuals().selection.bg_fill)
+            .corner_radius(egui::CornerRadius::same(3))
+            .inner_margin(egui::Margin::symmetric(6, 1))
+            .show(ui, |ui| ui.label(RichText::new(sv.short_id.to_string()).monospace().strong().color(Color32::WHITE)));
+        ui.label(RichText::new(&sv.label).strong()).on_hover_text(format!("service id {:06X}", sv.service_id));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{:.2} kbit/s", sv.bitrate / 1000.0)).monospace());
+        });
+    });
+    if let Some(a) = &sv.audio
+        && mdi
+    {
+        // A modulator's audio comes encoded with the MDI: no input, no levels.
+        ui.label(RichText::new(format!("{} \u{b7} from the MDI", a.codec)).weak());
+    } else if let Some(a) = &sv.audio {
+        let level = live.then_some((a.counters.input_rms_dbfs, a.counters.input_peak_dbfs));
+        meter_with_text(ui, ("tx_service_meter", (mux, sv.short_id)), level, (ui.available_width() - 90.0).max(120.0), MeterKind::Audio);
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("{} @ {:.1} kbit/s \u{b7} {}", a.codec, f64::from(a.encoder_bitrate) / 1000.0, a.input)).weak(),
+            )
+            .wrap(),
+        );
+        let mut notes = Vec::new();
+        if a.input_finished {
+            notes.push("input ended".to_string());
+        }
+        if a.counters.frames_dropped > 0 {
+            notes.push(format!("{} frames dropped", a.counters.frames_dropped));
+        }
+        if a.counters.encoder_errors > 0 {
+            notes.push(format!("{} encoder errors", a.counters.encoder_errors));
+        }
+        if !notes.is_empty() {
+            ui.colored_label(pal.error, notes.join(", "));
+        }
+        if let Some(w) = &a.web_stream {
+            web_stream_status(ui, w, sv.short_id, pal);
+        }
+        if let Some(ppm) = a.counters.input_drift_ppm {
+            ui.label(RichText::new(format!("following the input clock: {ppm:+.0} ppm")).weak().small());
+        }
+    }
+    for app in &sv.apps {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("+ {} \u{b7} {:.2} kbit/s", app.kind, app.bitrate / 1000.0)).weak());
+            if let Some(j) = &app.journaline {
+                journaline_status(ui, tx, j, live);
+            }
+        });
+        if let Some(e) = app.journaline.as_ref().and_then(|j| j.error.as_ref()) {
+            ui.add(egui::Label::new(RichText::new(format!("{e} (the pages before stay on the air)")).color(pal.error).small()).wrap());
+        }
+    }
+}
 /// A Journaline application: its pages, the page file's or feeds' updates, and the
 /// Update button.
 fn journaline_status(ui: &mut Ui, tx: &TxSession, j: &JournalineStatus, live: bool) {

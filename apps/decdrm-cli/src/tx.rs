@@ -1,7 +1,7 @@
 //! `decdrm tx` — run the DRM transmitter described by a station configuration file.
 
 use anyhow::{Context, Result, bail};
-use decdrm_station::{GroupStation, Station, StationConfig, StationPlan, StationStatus, StopHandle};
+use decdrm_station::{GroupStation, ServiceStatus, Station, StationConfig, StationPlan, StationStatus, StopHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,12 +169,15 @@ fn print_status(s: &StationStatus) {
             i + 1,
             m.frequency_hz as f64 / 1e6,
             m.mode,
-            m.services,
-            if m.services == 1 { "" } else { "s" },
+            m.services.len(),
+            if m.services.len() == 1 { "" } else { "s" },
             m.output_rms_dbfs,
             m.sdc_bytes_used,
             m.sdc_capacity
         );
+        for sv in &m.services {
+            println!("{}", service_line(sv, false));
+        }
     }
     if let Some(h) = &s.hackrf {
         let mut extra = String::new();
@@ -201,43 +204,50 @@ fn print_status(s: &StationStatus) {
             m.sender.as_ref().map(|s| format!(" ({s})")).unwrap_or_default()
         );
     }
-    for sv in &s.services {
-        let mut line = format!("          service {} {:06X} \"{}\" {:.2} kbit/s", sv.short_id, sv.service_id, sv.label, sv.bitrate / 1000.0);
-        if let Some(a) = &sv.audio
-            && s.mdi.is_some()
-        {
-            // A modulator's audio comes encoded with the MDI: no input, no levels.
-            line.push_str(&format!(": {}", a.codec));
-        } else if let Some(a) = &sv.audio {
-            line.push_str(&format!(
-                ": {}, input {:.1} dBFS{}{}{}{}",
-                a.codec,
-                a.counters.input_rms_dbfs,
-                if a.input_finished { " (ended)" } else { "" },
-                a.web_stream
-                    .as_ref()
-                    .map(|w| format!(
-                        ", web stream {} ({:.1} s buffered){}",
-                        w.state,
-                        w.buffer_s,
-                        w.title.as_ref().map(|t| format!(", \"{t}\"")).unwrap_or_default()
-                    ))
-                    .unwrap_or_default(),
-                a.counters.input_drift_ppm.map(|p| format!(", clock trim {p:+.0} ppm")).unwrap_or_default(),
-                if a.counters.frames_dropped > 0 { format!(", {} frames dropped", a.counters.frames_dropped) } else { String::new() }
-            ));
+    if s.multiplexes.is_empty() {
+        for sv in &s.services {
+            println!("{}", service_line(sv, s.mdi.is_some()));
         }
-        for app in &sv.apps {
-            line.push_str(&format!("; {} {:.2} kbit/s", app.kind, app.bitrate / 1000.0));
-            if let Some(j) = &app.journaline {
-                let source = if j.feeds.is_empty() { "page file" } else { "feeds" };
-                let updates = if j.updates > 0 { format!(", {source} loaded again {}x", j.updates) } else { String::new() };
-                let feeds = if j.feeds.is_empty() { String::new() } else { format!(" from {} feeds", j.feeds.len()) };
-                line.push_str(&format!(" ({} pages{feeds}{updates})", j.pages));
-            }
-        }
-        println!("{line}");
     }
+}
+
+/// One detailed service line for [`print_status`] (a modulator's audio has no input).
+fn service_line(sv: &ServiceStatus, mdi: bool) -> String {
+    let mut line = format!("          service {} {:06X} \"{}\" {:.2} kbit/s", sv.short_id, sv.service_id, sv.label, sv.bitrate / 1000.0);
+    if let Some(a) = &sv.audio
+        && mdi
+    {
+        // A modulator's audio comes encoded with the MDI: no input, no levels.
+        line.push_str(&format!(": {}", a.codec));
+    } else if let Some(a) = &sv.audio {
+        line.push_str(&format!(
+            ": {}, input {:.1} dBFS{}{}{}{}",
+            a.codec,
+            a.counters.input_rms_dbfs,
+            if a.input_finished { " (ended)" } else { "" },
+            a.web_stream
+                .as_ref()
+                .map(|w| format!(
+                    ", web stream {} ({:.1} s buffered){}",
+                    w.state,
+                    w.buffer_s,
+                    w.title.as_ref().map(|t| format!(", \"{t}\"")).unwrap_or_default()
+                ))
+                .unwrap_or_default(),
+            a.counters.input_drift_ppm.map(|p| format!(", clock trim {p:+.0} ppm")).unwrap_or_default(),
+            if a.counters.frames_dropped > 0 { format!(", {} frames dropped", a.counters.frames_dropped) } else { String::new() }
+        ));
+    }
+    for app in &sv.apps {
+        line.push_str(&format!("; {} {:.2} kbit/s", app.kind, app.bitrate / 1000.0));
+        if let Some(j) = &app.journaline {
+            let source = if j.feeds.is_empty() { "page file" } else { "feeds" };
+            let updates = if j.updates > 0 { format!(", {source} loaded again {}x", j.updates) } else { String::new() };
+            let feeds = if j.feeds.is_empty() { String::new() } else { format!(" from {} feeds", j.feeds.len()) };
+            line.push_str(&format!(" ({} pages{feeds}{updates})", j.pages));
+        }
+    }
+    line
 }
 
 /// A running station: one multiplex, or a group of them through one radio.

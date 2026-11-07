@@ -169,7 +169,7 @@ impl GroupStation {
                 crate::station::MultiplexStatus {
                     frequency_hz: m.frequency_hz,
                     mode: format!("{} / {} kHz", m.plan.tx.mode, m.plan.tx.occupancy.bandwidth_khz()),
-                    services: s.services.len(),
+                    services: s.services.clone(),
                     frames: s.frames,
                     output_rms_dbfs: s.output_rms_dbfs,
                     sdc_blocks: s.sdc_blocks,

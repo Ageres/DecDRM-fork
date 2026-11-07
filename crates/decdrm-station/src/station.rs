@@ -86,8 +86,8 @@ pub struct MultiplexStatus {
     pub frequency_hz: u64,
     /// E.g. `B / 10 kHz`.
     pub mode: String,
-    /// Services in this multiplex.
-    pub services: usize,
+    /// The services of this multiplex, in Short Id order.
+    pub services: Vec<ServiceStatus>,
     /// Transmission frames (400 ms each) produced.
     pub frames: u64,
     /// RMS level of this multiplex's own 48 kHz output, dBFS.
