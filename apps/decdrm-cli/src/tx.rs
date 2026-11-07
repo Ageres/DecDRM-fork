@@ -1,7 +1,7 @@
 //! `decdrm tx` — run the DRM transmitter described by a station configuration file.
 
 use anyhow::{Context, Result, bail};
-use decdrm_station::{Station, StationConfig, StationPlan, StationStatus, StopHandle};
+use decdrm_station::{GroupStation, Station, StationConfig, StationPlan, StationStatus, StopHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,12 +55,7 @@ pub fn run(a: TxArgs) -> Result<()> {
     if a.check {
         return Ok(());
     }
-    let plan = match plan {
-        StationPlan::Single(plan) => plan,
-        StationPlan::Group(_) => bail!(
-            "several multiplexes are configured: sending them in one stream is not implemented yet (see docs/design/multi-multiplex.md; --check prints the group plan)"
-        ),
-    };
+
     if let Some(d) = a.duration
         && !(d.is_finite() && d > 0.0)
     {
@@ -90,7 +85,10 @@ pub fn run(a: TxArgs) -> Result<()> {
             }
         });
     }
-    let station = Station::with_plan_and_stop(cfg, plan, stop);
+    let station = match plan {
+        StationPlan::Single(plan) => Station::with_plan_and_stop(cfg, plan, stop).map(|s| Running::Single(Box::new(s))),
+        StationPlan::Group(group) => GroupStation::with_stop(cfg, group, stop).map(|g| Running::Group(Box::new(g))),
+    };
     created.store(true, Ordering::Relaxed);
     let mut station = station?;
     if let Some(dev) = &station.status().device {
@@ -114,7 +112,7 @@ pub fn run(a: TxArgs) -> Result<()> {
         );
     }
     // The inputs' log: web stream connections, titles, reconnections.
-    let print_log = |station: &mut Station| station.take_log().iter().for_each(|line| println!("{line}"));
+    let print_log = |station: &mut Running| station.take_log().iter().for_each(|line| println!("{line}"));
     print_log(&mut station);
     let started = Instant::now();
     let mut next_status = a.status_every;
@@ -129,7 +127,7 @@ pub fn run(a: TxArgs) -> Result<()> {
         if let Err(e) = station.transmit_frame() {
             // Complete the file and hand the radio back before reporting.
             let _ = station.finish();
-            return Err(e.into());
+            return Err(e);
         }
         print_log(&mut station);
         let s = station.status();
@@ -221,5 +219,48 @@ fn print_status(s: &StationStatus) {
             }
         }
         println!("{line}");
+    }
+}
+
+/// A running station: one multiplex, or a group of them through one radio.
+enum Running {
+    Single(Box<Station>),
+    Group(Box<GroupStation>),
+}
+
+impl Running {
+    fn transmit_frame(&mut self) -> Result<&[f32]> {
+        Ok(match self {
+            Self::Single(station) => station.transmit_frame()?,
+            Self::Group(group) => group.transmit_frame()?,
+        })
+    }
+
+    fn status(&self) -> &StationStatus {
+        match self {
+            Self::Single(station) => station.status(),
+            Self::Group(group) => group.status(),
+        }
+    }
+
+    fn take_log(&mut self) -> Vec<String> {
+        match self {
+            Self::Single(station) => station.take_log(),
+            Self::Group(group) => group.take_log(),
+        }
+    }
+
+    fn inputs_finished(&self) -> bool {
+        match self {
+            Self::Single(station) => station.inputs_finished(),
+            Self::Group(group) => group.inputs_finished(),
+        }
+    }
+
+    fn finish(self) -> Result<StationStatus> {
+        Ok(match self {
+            Self::Single(station) => station.finish()?,
+            Self::Group(group) => group.finish()?,
+        })
     }
 }

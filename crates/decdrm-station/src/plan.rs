@@ -1022,15 +1022,20 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
         GroupStrategy::PerMultiplexResamplers
     };
 
-    // The sum must not clip the 8-bit DAC.
+    // The sum must not clip the 8-bit DAC. OFDM has a crest factor of about 14 dB
+    // (measured on the HackRF path), so the RMS of the sum has to stay that far below
+    // full scale for the peaks to fit.
+    const CREST_DB: f64 = 14.0;
     let sum_db = 10.0 * (multiplexes.len() as f64).log10();
     for m in &multiplexes {
-        if m.level_dbfs + sum_db > -3.0 {
+        if m.level_dbfs + sum_db > -CREST_DB {
             p.push(format!(
-                "multiplexes: {:.4} MHz at {:.1} dBFS plus the others reaches {:.1} dBFS: lower level_dbfs",
+                "multiplexes: {:.4} MHz at {:.1} dBFS plus the others reaches {:.1} dBFS; the OFDM peaks reach about {:.0} dB higher and clip the 8-bit DAC - set level_dbfs to about {:.1}",
                 m.frequency_hz as f64 / 1e6,
                 m.level_dbfs,
-                m.level_dbfs + sum_db
+                m.level_dbfs + sum_db,
+                CREST_DB,
+                -CREST_DB - sum_db
             ));
         }
     }

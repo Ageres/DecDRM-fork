@@ -11,7 +11,7 @@
 
 [output]
 format = "iq"          # complex baseband; the HackRF does its own IF shift
-level_dbfs = -15
+level_dbfs = -18
 
 [output.hackrf]
 # frequency_hz is not used with [[multiplex]]: each multiplex names its own.
@@ -27,7 +27,7 @@ mode = "B"
 occupancy = 3          # 10 kHz
 msc_mode = "16-QAM"
 protection_b = 1
-level_dbfs = -15
+level_dbfs = -18     # two carriers sum: peaks stay below full scale
 
 [[multiplex.service]]
 label = "PROGRAMME A"
@@ -45,7 +45,7 @@ mode = "B"
 occupancy = 3          # 10 kHz
 msc_mode = "16-QAM"
 protection_b = 1
-level_dbfs = -15
+level_dbfs = -18     # two carriers sum: peaks stay below full scale
 
 [[multiplex.service]]
 label = "PROGRAMME B"

@@ -155,8 +155,9 @@ struct Sync {
 pub(crate) struct HackrfSink {
     settings: HackrfSettings,
     sync: Arc<Sync>,
-    /// Resampling and the IF mixer, run by the station's thread.
-    resampler: Resampler,
+    /// Resampling and the IF mixer, run by the station's thread; absent when the
+    /// caller feeds the radio's rate already (a group combiner).
+    resampler: Option<Resampler>,
     /// The resampler's output, reused between frames.
     resampled: Vec<f32>,
     mixer: Mixer,
@@ -169,6 +170,16 @@ impl HackrfSink {
     /// and start the writer thread. Transmitting begins once `buffer_s` of
     /// signal has been queued; until then the samples just wait in the queue.
     pub fn open(settings: &HackrfSettings) -> Result<Self> {
+        Self::open_inner(settings, true)
+    }
+
+    /// Like [`Self::open`], but the samples come at the radio's rate already (the
+    /// group combiner), so the sink does not resample them.
+    pub fn open_resampled(settings: &HackrfSettings) -> Result<Self> {
+        Self::open_inner(settings, false)
+    }
+
+    fn open_inner(settings: &HackrfSettings, resample: bool) -> Result<Self> {
         let mut handle = open_device(settings.serial.as_deref())?;
         // Linux: the kernel's driver (if any) is detached for our claims.
         let _ = handle.set_auto_detach_kernel_driver(true);
@@ -182,8 +193,11 @@ impl HackrfSink {
         set_amp(&mut handle, settings.amp_enable)?;
 
         let rate = settings.sample_rate_hz;
-        let resampler = Resampler::new(48_000, rate, 2, settings.resampler.quality())
-            .map_err(StationError::Output)?;
+        let resampler = if resample {
+            Some(Resampler::new(48_000, rate, 2, settings.resampler.quality()).map_err(StationError::Output)?)
+        } else {
+            None
+        };
         let prebuffer_bytes = prebuffer_bytes(settings);
 
         let sync = Arc::new(Sync::default());
@@ -244,11 +258,16 @@ impl HackrfSink {
         // 1–2: resample to the HackRF's rate, shift the spectrum to the IF and
         //      scale to 8-bit signed I/Q (see `shift_and_convert`).
         // The output is the input rate times the HackRF's, two bytes per frame.
-        let rate = self.settings.sample_rate_hz as usize;
-        let mut bytes = Vec::with_capacity(samples.len() * rate / 48_000 + 4 * 1024);
-        self.resampled.clear();
-        self.resampler.process_into(samples, &mut self.resampled);
-        shift_and_convert(&self.resampled, &mut self.mixer, &mut bytes);
+        let input: &[f32] = match self.resampler.as_mut() {
+            Some(r) => {
+                self.resampled.clear();
+                r.process_into(samples, &mut self.resampled);
+                &self.resampled
+            }
+            None => samples,
+        };
+        let mut bytes = Vec::with_capacity(input.len() + 4 * 1024);
+        shift_and_convert(input, &mut self.mixer, &mut bytes);
         // 3. Hand them over, then wait for the headroom to free up.
         let mut s = self.sync.state.lock().expect("the queue lock");
         if let Some(e) = &s.error {
@@ -292,7 +311,7 @@ impl HackrfSink {
         }
         // The resampler's tail and enough silence to push it (and whatever the
         // radio still holds) through: the writer paces them out at real time.
-        let tail = self.resampler.flush();
+        let tail = self.resampler.as_mut().map(|r| r.flush()).unwrap_or_default();
         let mut converted = Vec::new();
         shift_and_convert(&tail, &mut self.mixer, &mut converted);
         s.queue.extend(converted);

@@ -875,7 +875,7 @@ fn hackrf_if_preset_grid_validates() {
 #[cfg(feature = "hackrf")]
 #[test]
 fn multiplex_group_plan() {
-    let cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    let cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
     let plan = cfg.validate_station().unwrap_or_else(|e| panic!("{e}"));
     let decdrm_station::StationPlan::Group(group) = plan else { panic!("expected a group") };
     assert_eq!(group.multiplexes.len(), 2);
@@ -912,14 +912,14 @@ fn multiplex_group_checks() {
         }
     };
     // 1.1 MHz apart: over the design limit.
-    let p = problems_of(multiplex_text(25_000_000, 26_100_000, -15, ""));
+    let p = problems_of(multiplex_text(25_000_000, 26_100_000, -18, ""));
     assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
     // 5 kHz apart: the 10 kHz channels overlap.
-    let p = problems_of(multiplex_text(25_760_000, 25_765_000, -15, ""));
+    let p = problems_of(multiplex_text(25_760_000, 25_765_000, -18, ""));
     assert!(has(&p, "overlap"), "{p:?}");
     // 0 dBFS per multiplex: the sum would clip the 8-bit DAC.
     let p = problems_of(multiplex_text(25_760_000, 25_780_000, 0, ""));
-    assert!(has(&p, "lower level_dbfs"), "{p:?}");
+    assert!(has(&p, "set level_dbfs"), "{p:?}");
     // A missing frequency.
     let missing = r#"
 [output]
@@ -940,21 +940,21 @@ input = { tone_hz = 440.0 }
     let p = problems_of(missing.to_string());
     assert!(has(&p, "frequency_hz is required"), "{p:?}");
     // Services at the top level and a sound-card output are rejected.
-    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
     cfg.services = vec![decdrm_station::ServiceSettings::new("Top", 0x44)];
     let p = cfg.validate_station().unwrap_err().problems().to_vec();
     assert!(has(&p, "belong inside the multiplexes"), "{p:?}");
-    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -15, ""));
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
     cfg.output.device = Some("default".into());
     let p = cfg.validate_station().unwrap_err().problems().to_vec();
     assert!(has(&p, "[output.hackrf]"), "{p:?}");
     // An unknown key inside a multiplex is named by the plan (flatten turns serde's
     // unknown-field check off, so the parser cannot).
-    let typo = multiplex_text(25_760_000, 25_780_000, -15, "").replace("occupancy = 3", "occupancyy = 3");
+    let typo = multiplex_text(25_760_000, 25_780_000, -18, "").replace("occupancy = 3", "occupancyy = 3");
     let p = parse(&typo).validate_station().unwrap_err().problems().to_vec();
     assert!(has(&p, "unknown field"), "{p:?}");
     // The plain two-multiplex file is valid.
-    assert!(problems_of(multiplex_text(25_760_000, 25_780_000, -15, "")).is_empty());
+    assert!(problems_of(multiplex_text(25_760_000, 25_780_000, -18, "")).is_empty());
 }
 
 /// The checked-in example of a two-multiplex group validates.

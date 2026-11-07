@@ -1,6 +1,8 @@
 # Several multiplexes in one HackRF stream
 
-**Status: draft, not implemented.** The design maximum is **4 multiplexes** (mode B,
+**Status: the configuration, the plan and the combiner are implemented; the
+per-multiplex status and the Pi 4 measurement remain.** The design maximum is
+**4 multiplexes** (mode B,
 9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76 and
 25.78 MHz). A Raspberry Pi 4 is to be measured with 1, 2 and 4 carriers after the
 implementation, so the load numbers below are predictions.
@@ -140,7 +142,8 @@ It must check, per multiplex and for the group:
 - the worst case of the resampler: `fast` stays transparent only for the
   4.5-10 kHz occupancies (the existing warning, now per multiplex);
 - clipping: the sum of N multiplexes against the 8-bit DAC, with `level_dbfs` per
-  multiplex (default lowered by the plan when N is large, or a warning).
+  multiplex; the OFDM crest factor is about 14 dB (measured), so the plan asks for
+  the RMS of the sum to stay that far below full scale and suggests a level.
 
 ## Status
 
