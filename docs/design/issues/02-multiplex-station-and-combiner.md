@@ -7,9 +7,9 @@ Suggested labels: `enhancement`, `hackrf`, `station`.
 > **Built differently.** The feature shipped as a `GroupStation` that runs one plain
 > `Station` per multiplex (with its outputs stripped) and a `Combiner`, rather than a
 > `Station`/`Multiplex` split; the single-multiplex path stayed untouched and is
-> byte-identical. Still open from this issue: a composite *file* output
-> (`output.sample_rate_hz`) and the thread per multiplex that keeps a wide span (above
-> about 180 kHz) real time on a Pi 4.
+> byte-identical. Wide spans (above about 180 kHz) run one stage per multiplex on its
+> own thread, one per multiplex per frame. Still open from this issue: a composite
+> *file* output (`output.sample_rate_hz`).
 
 ## Why
 

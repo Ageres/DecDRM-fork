@@ -1,8 +1,8 @@
 # Several multiplexes in one HackRF stream
 
-**Status: the configuration, the plan, the combiner, the per-multiplex status and the
-GUI are implemented; the Pi 4 measurement and the thread per multiplex (wide spans)
-remain.** The design maximum is **4 multiplexes** (mode B,
+**Status: the configuration, the plan, the combiner, the per-multiplex status, the
+GUI and the thread per multiplex (wide spans) are implemented; the Pi 4 measurement
+remains.** The design maximum is **4 multiplexes** (mode B,
 9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76 and
 25.78 MHz). A Raspberry Pi 4 is to be measured with 1, 2 and 4 carriers after the
 implementation, so the load numbers below are predictions.
@@ -106,7 +106,7 @@ multiplex 2: services -> MSC frame -> DRM modulator (48 kHz) -> upsample to Fi
   | Separation of the outermost carriers | Strategy | Cost (one Pi 4 core, `fast`) |
   |---|---|---|
   | up to about 36 / 84 / 180 kHz | mix at an intermediate rate `Fi` (48, 96 or 192 kHz), then **one** shared resampler `Fi -> sample_rate_hz` | 55 % plus N x (5 % + 5.5 % x Fi / 200 kHz): 1-4 carriers about 60-80 % (Fi 48), 63-86 % (Fi 96), 65-96 % (Fi 192) |
-  | above about 180 kHz (up to 1 MHz) | each multiplex resampled 48 kHz -> `sample_rate_hz` on its own, mixed and summed at `sample_rate_hz` | N x about 60 %; the code lets the multiplexes take turns on one thread, so two carriers no longer keep real time *on a Pi* (a desktop core does); a thread per multiplex would lift that |
+  | above about 180 kHz (up to 1 MHz) | each multiplex resampled 48 kHz -> `sample_rate_hz` on its own, mixed and summed at `sample_rate_hz` | N x about 60 %, one thread per multiplex (the stages run in parallel, one thread each per frame), so four carriers spread over the Pi 4's cores |
 
   `Fi` is the smallest of 48, 96 and 192 kHz that holds the group around its centre
   (every multiplex with its own bandwidth inside `Fi / 2`, 1 kHz of margin). A 10 kHz
@@ -182,13 +182,14 @@ services about 5 %, and a per-multiplex stage at `Fi` about 55 % x `Fi` / 2 Msps
 | 3 | ~74 % | ~78 % | ~86 % |
 | 4 | ~80 % | ~86 % | ~96 % |
 
-- All of it is one thread (the `GroupStation` builds and combines on the caller's
-  thread), so the sum must stay under 100 %: four carriers near 180 kHz are about the
-  limit and are the case to measure on the Pi.
-- Above about 180 kHz a resampler per multiplex costs about 60 % of a core each: two
-  carriers ~120 %, four ~240 %. That needs threads; the current code is
-  single-threaded, so on a Pi real time holds for one carrier only there (a desktop
-  core is fast enough for two to four).
+- The narrow strategies (`Fi` 48/96/192) are one thread (the `GroupStation` builds and
+  combines on the caller's thread), so the sum must stay under 100 %: four carriers
+  near 180 kHz are about the limit and are the case to measure on the Pi.
+- Above about 180 kHz a resampler per multiplex costs about 60 % of a core each, but
+  the stages run on their own threads (one per multiplex, spawned per frame), so the
+  cost spreads across cores: four carriers want about 240 % of a core in total, about
+  60 % of each of the Pi's four cores, and fit. The multiplexes themselves and the
+  mixing stay on the caller's thread (about 5 % each) and pace the workers.
 - 18 and 20 kHz multiplexes need `balanced` (about four times the resampler) and do not
   scale past one carrier on a Pi.
 - More services add about 1-2 points each; RAM is a few MB per multiplex.

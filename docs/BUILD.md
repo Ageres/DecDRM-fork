@@ -260,7 +260,7 @@ repository, the build, the kernel module and udev, the radio, the station.
    intermediate rate is 48, 96 or 192 kHz, which holds carrier separations up to about
    36, 84 and 180 kHz; a wider group resamples every multiplex on its own. With
    `resampler = "fast"` (single multiplexes measured at about 60 % of one core; a
-   group is built and combined on one thread):
+   narrow group is built and combined on one thread):
 
    | Carriers | span <= 36 kHz | <= 84 kHz | <= 180 kHz |
    |---|---|---|---|
@@ -270,9 +270,9 @@ repository, the build, the kernel module and udev, the radio, the station.
    | 4 | about 80 % | about 86 % | about 96 % (the limit) |
 
    A span above about 180 kHz (up to 1 MHz) costs a resampler per multiplex, about
-   60 % of a core each: the current single-threaded code keeps real time there on a
-   desktop, not on a Pi (two carriers would need 120 % of one thread). The 180 kHz
-   cases are the ones to measure first: `vcgencmd get_throttled` must stay `0x0`, and
+   60 % of a core each; they run on their own threads (one per multiplex per frame),
+   so the cost spreads across the Pi's cores. The 180 kHz cases are the ones to
+   measure first: `vcgencmd get_throttled` must stay `0x0`, and
    the station's status line must show no underruns. `--duration 20` with a station
    file that has one, two and four `[[multiplex]]` tables measures it, as above.
 

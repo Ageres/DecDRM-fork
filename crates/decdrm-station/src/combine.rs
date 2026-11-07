@@ -28,6 +28,16 @@ fn sin_cos(angle: f64) -> (f64, f64) {
     (cos, sin)
 }
 
+/// One multiplex's frame through its stage into out: 48 kHz -> the radio's rate, or
+/// as it is when the stage is absent (the frames are 48 kHz there).
+fn resample_into(stage: &mut Option<Resampler>, samples: &[f32], out: &mut Vec<f32>) {
+    out.clear();
+    match stage {
+        Some(r) => r.process_into(samples, out),
+        None => out.extend_from_slice(samples),
+    }
+}
+
 /// Several multiplexes' 48 kHz baseband on their way to one stream at the radio's rate.
 pub(crate) struct Combiner {
     /// Per multiplex: 48 kHz -> `rate` (absent when `rate` is 48 kHz).
@@ -38,7 +48,10 @@ pub(crate) struct Combiner {
     steps: Vec<(f64, f64)>,
     /// The composite at `rate`, interleaved I/Q.
     mix: Vec<f32>,
-    /// One multiplex's resampled frame, reused.
+    /// Per multiplex: the resampled frame (reused; the stages may fill them on their
+    /// own threads).
+    outs: Vec<Vec<f32>>,
+    /// One multiplex's resampled frame, reused by [`Self::flush`].
     scratch: Vec<f32>,
     /// `rate` -> the radio's rate (absent with the per-multiplex strategy).
     shared: Option<Resampler>,
@@ -51,6 +64,7 @@ impl Combiner {
         let mut stages = Vec::with_capacity(group.multiplexes.len());
         let mut phasors = Vec::with_capacity(group.multiplexes.len());
         let mut steps = Vec::with_capacity(group.multiplexes.len());
+        let mut outs = Vec::with_capacity(group.multiplexes.len());
         for m in &group.multiplexes {
             stages.push(if rate == 48_000 {
                 None
@@ -62,13 +76,14 @@ impl Combiner {
             let offset_hz = m.offset_hz - group.if_offset_hz;
             phasors.push((1.0, 0.0));
             steps.push(sin_cos(TAU * offset_hz / f64::from(rate)));
+            outs.push(Vec::new());
         }
         let shared = if rate == group.sample_rate_hz {
             None
         } else {
             Some(Resampler::new(rate, group.sample_rate_hz, 2, quality.quality()).map_err(StationError::Output)?)
         };
-        Ok(Self { stages, phasors, steps, mix: Vec::new(), scratch: Vec::new(), shared })
+        Ok(Self { stages, phasors, steps, mix: Vec::new(), outs, scratch: Vec::new(), shared })
     }
 
 
@@ -77,15 +92,40 @@ impl Combiner {
         self.mix.clear();
     }
 
+    /// Add every multiplex's 48 kHz interleaved I/Q frame to the composite, in the
+    /// order of the multiplexes. With a stage per multiplex the stages are resamplers
+    /// from 48 kHz to the radio's rate, the widest-spread case's whole cost: they run
+    /// on their own threads, one per multiplex, spawned per frame.
+    pub fn push_frame(&mut self, frames: &[&[f32]]) {
+        assert_eq!(frames.len(), self.stages.len(), "a frame per multiplex");
+        if self.shared.is_none() && self.stages.len() > 1 {
+            let Self { stages, outs, .. } = self;
+            std::thread::scope(|scope| {
+                for ((stage, out), &frame) in stages.iter_mut().zip(outs.iter_mut()).zip(frames) {
+                    scope.spawn(move || resample_into(stage, frame, out));
+                }
+            });
+            for i in 0..self.stages.len() {
+                self.mix_into(i);
+            }
+        } else {
+            for (i, &frame) in frames.iter().enumerate() {
+                self.push(i, frame);
+            }
+        }
+    }
+
     /// Add multiplex `index`'s 48 kHz interleaved I/Q frame to the composite.
     pub fn push(&mut self, index: usize, samples: &[f32]) {
-        let Self { stages, scratch, mix, phasors, steps, .. } = self;
-        let stage = &mut stages[index];
-        scratch.clear();
-        match stage {
-            Some(r) => r.process_into(samples, scratch),
-            None => scratch.extend_from_slice(samples),
-        }
+        resample_into(&mut self.stages[index], samples, &mut self.outs[index]);
+        self.mix_into(index);
+    }
+
+    /// Shift the resampled frame of multiplex `index` onto its offset and add it to
+    /// [`Self::mix`].
+    fn mix_into(&mut self, index: usize) {
+        let Self { outs, mix, phasors, steps, .. } = self;
+        let scratch = &outs[index];
         if mix.len() < scratch.len() {
             mix.resize(scratch.len(), 0.0);
         }
@@ -196,27 +236,37 @@ codec = "he-aac"
 input = { tone_hz = 880.0 }
 "#;
 
-    /// Two multiplexes 20 kHz apart: each plain carrier lands at its offset around the
-    /// group's centre, and the group's IF is not applied here.
-    #[test]
-    fn two_multiplexes_land_on_their_offsets() {
-        let cfg = StationConfig::from_toml_str(TWO).unwrap();
+    /// Combine `text`'s multiplexes (a DC frame each) and return the plan and the
+    /// radio-rate output. The frames go through [`Combiner::push_frame`], as a station
+    /// sends them.
+    fn combine(text: &str) -> (crate::plan::GroupPlan, Vec<f32>) {
+        let cfg = StationConfig::from_toml_str(text).unwrap();
         let crate::plan::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
             panic!("expected a group")
         };
         let mut combiner = Combiner::new(&group, crate::config::ResamplerSetting::Fast).unwrap();
         let mut out = Vec::new();
+        let mut frames = Vec::new();
         for _ in 0..2 {
-            combiner.begin_frame();
-            for i in 0..group.multiplexes.len() {
+            frames.clear();
+            for _ in 0..group.multiplexes.len() {
                 let mut frame = vec![0.0f32; 19_200 * 2];
                 for z in frame.as_chunks_mut::<2>().0 {
                     z[0] = 1.0;
                 }
-                combiner.push(i, &frame);
+                frames.push(frame);
             }
+            let refs: Vec<&[f32]> = frames.iter().map(|f| f.as_slice()).collect();
+            combiner.begin_frame();
+            combiner.push_frame(&refs);
             combiner.finish_frame(&mut out);
         }
+        (group, out)
+    }
+
+    /// Every multiplex's plain carrier lands at its offset around the group's centre
+    /// (the group's IF is not applied here), and there is nothing at the centre.
+    fn assert_on_their_offsets(group: &crate::plan::GroupPlan, out: &[f32]) {
         let rate = f64::from(group.sample_rate_hz);
         let magnitude = |hz: f64| {
             let step = TAU * hz / rate;
@@ -229,6 +279,7 @@ input = { tone_hz = 880.0 }
             }
             (re * re + im * im).sqrt() / (out.len() as f64 / 2.0)
         };
+        let mut strongest = 0.0f64;
         for m in &group.multiplexes {
             let offset = m.offset_hz - group.if_offset_hz;
             let peak = magnitude(offset);
@@ -237,7 +288,28 @@ input = { tone_hz = 880.0 }
                 "{offset} Hz: {peak} against {}",
                 magnitude(offset + 5_000.0)
             );
+            strongest = strongest.max(peak);
         }
-        assert!(magnitude(0.0) < magnitude(10_000.0) / 10.0, "nothing at the centre");
+        // A mixer that did not shift would leave the carriers at DC.
+        let centre = magnitude(0.0);
+        assert!(centre < strongest / 10.0, "nothing at the centre: {centre} against {strongest}");
+    }
+
+    /// Two multiplexes 20 kHz apart: one shared resampler, and each plain carrier lands
+    /// at its offset.
+    #[test]
+    fn two_multiplexes_land_on_their_offsets() {
+        let (group, out) = combine(TWO);
+        assert!(group.intermediate_hz.is_some(), "one shared resampler");
+        assert_on_their_offsets(&group, &out);
+    }
+
+    /// 190 kHz apart is past the shared resampler's span: each multiplex gets its own
+    /// stage, the stages run on their own threads, and the pair still lands right.
+    #[test]
+    fn a_wide_pair_runs_a_stage_per_multiplex() {
+        let (group, out) = combine(&TWO.replace("25_780_000", "25_950_000"));
+        assert!(group.intermediate_hz.is_none(), "a stage per multiplex");
+        assert_on_their_offsets(&group, &out);
     }
 }

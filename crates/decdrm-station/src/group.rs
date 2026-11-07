@@ -79,10 +79,11 @@ impl GroupStation {
     /// radio. Waits while the radio's queue is full (pacing the group to real time).
     pub fn transmit_frame(&mut self) -> Result<&[f32]> {
         self.combiner.begin_frame();
-        for (i, station) in self.stations.iter_mut().enumerate() {
-            let frame = station.transmit_frame()?;
-            self.combiner.push(i, frame);
+        let mut frames = Vec::with_capacity(self.stations.len());
+        for station in &mut self.stations {
+            frames.push(station.transmit_frame()?);
         }
+        self.combiner.push_frame(&frames);
         self.combiner.finish_frame(&mut self.samples);
         self.sink.write(&self.samples, &self.stop)?;
         self.frames += 1;
