@@ -1,7 +1,9 @@
 # Several multiplexes in one HackRF stream
 
-**Status: draft, not implemented.** Target: 2 DRM multiplexes on 25.76 and 25.78 MHz
-(mode B, 10 kHz each); the design should scale to 4.
+**Status: draft, not implemented.** The design maximum is **4 multiplexes** (mode B,
+9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76 and
+25.78 MHz). A Raspberry Pi 4 is to be measured with 1, 2 and 4 carriers after the
+implementation, so the load numbers below are predictions.
 
 ## Goal
 
@@ -181,7 +183,15 @@ intended use): one shared resampler, so N barely matters.
 |---|---|---|---|
 | 2 | ~120 | 2 | fine on a Pi 4 |
 | 3 | ~180 | 3 | tight, leaves one core for everything else |
-| 4 | ~240 | 4 | no margin; a PC is the realistic host |
+| 4 | ~240 | 4 | fits the four cores with a fan; the case to measure |
+
+- The 240 % is 2.4 of the four cores. It fits only with one thread per multiplex, a
+  fan (2.4 cores sustained on a passive heatsink will throttle at 1.8 GHz) and no
+  throttling; the Pi 4 experiment decides. If it falls behind, the fallback is the
+  narrow-group strategy (below 96 kHz) or two carriers.
+- 18 and 20 kHz multiplexes need `balanced` (about four times the resampler cost),
+  about 800 % at four carriers: not on a Pi at all, a desktop task. On the Pi the
+  occupancies are 9 and 10 kHz.
 
 - More services per multiplex add about 1-2 percentage points each; four multiplexes
   with three services each add about 10 points.
@@ -193,7 +203,8 @@ intended use): one shared resampler, so N barely matters.
 - RAM: a few MB per multiplex plus the queue; not a concern.
 
 These are predictions; after the implementation, run a `step0`-style measurement with
-1, 2 and 4 multiplexes (both strategies) and put the measured numbers here.
+1, 2 and 4 multiplexes (9/10 kHz: the narrow group and the 1 MHz span) on a Pi 4 with
+a fan, record the CPU and `get_throttled`, and put the measured numbers here.
 
 ## Work breakdown
 
@@ -206,7 +217,8 @@ These are predictions; after the implementation, run a `step0`-style measurement
 4. Tests (config, plan, spectrum, smoke) - about 1 day.
 5. Docs (USER_GUIDE, BUILD.md with the load table, FORK.md) and an example station file
    - about half a day.
-6. Pi 4 measurement with 1/2/4 multiplexes - about half a day.
+6. Pi 4 measurement with 1/2/4 multiplexes, 9/10 kHz, both strategies, with a fan and
+   `get_throttled` recorded - about half a day.
 7. GUI: show and edit the multiplexes - 1-2 days, optional, can ship later.
 
 ## Risks and decisions
@@ -220,6 +232,11 @@ These are predictions; after the implementation, run a `step0`-style measurement
   At 2 Msps that is 1 MHz of the 1.75 MHz analog filter, so a wide group has to sit on
   the LO with a gap in the middle rather than at the default -250 kHz IF.
 - **Level**: `level_dbfs` per multiplex; the plan warns when the sum clips.
+- **Thermal**: four carriers at a 1 MHz span load about 2.4 cores; the experiment
+  decides whether a Pi 4 holds it (a fan, `get_throttled`). The fallback is the
+  narrow group or two carriers.
+- **18 and 20 kHz occupancies** do not scale past one carrier on a Pi: they need
+  `balanced`, about four times the resampler.
 - **26 MHz radio side** (documentation only): the HackRF is weak and spurious at the
   bottom of its range (a low-pass filter helps, the second harmonic lands at 52 MHz),
   and the stock clock's about 10 ppm is about 260 Hz at 26 MHz - noticeable for DRM.
