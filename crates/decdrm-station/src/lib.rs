@@ -79,5 +79,8 @@ pub use plan::{
     AppPlan, AudioPlan, GroupPlan, GroupStrategy, GroupedMultiplex, MultiplexPlan, ServicePlan, StationPlan,
     StreamContent, StreamPlan,
 };
-pub use station::{AppStatus, AudioStatus, FeedStatus, JournalineStatus, ServiceStatus, Station, StationStatus, StopHandle};
+pub use station::{
+    AppStatus, AudioStatus, FeedStatus, JournalineStatus, MultiplexStatus, ServiceStatus, Station, StationStatus,
+    StopHandle,
+};
 pub use webstream::{WebStreamState, WebStreamStatus};

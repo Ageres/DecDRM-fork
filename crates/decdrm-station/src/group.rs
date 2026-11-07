@@ -153,6 +153,25 @@ impl GroupStation {
         st.device = None;
         st.device_underruns = 0;
         st.device_buffer_ms = None;
+        st.multiplexes = self
+            .group
+            .multiplexes
+            .iter()
+            .zip(&self.stations)
+            .map(|(m, station)| {
+                let s = station.status();
+                crate::station::MultiplexStatus {
+                    frequency_hz: m.frequency_hz,
+                    mode: format!("{} / {} kHz", m.plan.tx.mode, m.plan.tx.occupancy.bandwidth_khz()),
+                    services: s.services.len(),
+                    frames: s.frames,
+                    output_rms_dbfs: s.output_rms_dbfs,
+                    sdc_blocks: s.sdc_blocks,
+                    sdc_bytes_used: s.sdc_bytes_used,
+                    sdc_capacity: s.sdc_capacity,
+                }
+            })
+            .collect();
         let n = self.samples.len().max(1);
         let (sum, peak) = self
             .samples

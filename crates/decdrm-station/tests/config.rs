@@ -890,7 +890,7 @@ fn multiplex_group_plan() {
     assert!(described.contains("25.7600 MHz") && described.contains("25.7800 MHz"), "{described}");
     // Sending a group is not implemented yet: validate() says so.
     let e = cfg.validate().unwrap_err();
-    assert!(has(e.problems(), "not implemented"), "{e}");
+    assert!(has(e.problems(), "run one multiplex"), "{e}");
     // The configuration round-trips through TOML with its multiplexes.
     let back = StationConfig::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap();
     assert_eq!(back.multiplexes.len(), 2);

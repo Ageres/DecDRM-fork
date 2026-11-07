@@ -767,6 +767,64 @@ which takes the signal off the air the same way it does a real broadcaster's.
 > **Keep to your licence and to lab conditions.** Even at the HackRF's milliwatt level,
 > an antenna turns it into a transmitter that needs one.
 
+### Several multiplexes through one HackRF
+
+One radio can send several DRM multiplexes at once, each on its own frequency, when
+they fit the radio's passband. Add a `[[multiplex]]` table per frequency instead of
+the top-level `[channel]` and `[[service]]`:
+
+```toml
+[output]
+format = "iq"
+level_dbfs = -18           # the default for the multiplexes below
+
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000    # the whole group's IF (see below)
+tx_gain_db = 40
+resampler = "fast"
+
+[[multiplex]]
+frequency_hz = 25_760_000
+mode = "B"
+occupancy = 3              # 10 kHz
+level_dbfs = -18
+
+[[multiplex.service]]
+label = "PROGRAMME A"
+id = 0x42
+
+[multiplex.service.audio]
+codec = "xhe-aac"
+input = { tone_hz = 440.0 }
+
+[[multiplex]]
+frequency_hz = 25_780_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+# ... its own services, as [[multiplex.service]]
+```
+
+`decdrm tx station.toml --check` prints the group and every multiplex before anything
+is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limits:
+
+- **up to four multiplexes**, at most **1 MHz between the outermost carriers**;
+- every multiplex at least 15 kHz away from the local oscillator (its DC spike) and
+  inside the radio's analog filter (about +-875 kHz at 2 Msps);
+- no overlap, and the levels must leave room for the sum: the OFDM peaks are about
+  14 dB above the RMS, so two carriers at -18 dBFS each stay below full scale (the
+  plan says when a level is too high);
+- **9 and 10 kHz occupancies** on a Raspberry Pi: 18 and 20 kHz need
+  `resampler = "balanced"`, which the Pi cannot keep up with (see the build guide).
+
+Each multiplex's 48 kHz baseband is combined with the others: one shared resampler
+brings a narrow group (up to about 96 kHz of span) to the radio's rate, a wider group
+(up to 1 MHz) is resampled per multiplex first. The group's own IF (where its centre
+sits relative to the local oscillator) is applied to the whole stream.
+
+The GUI runs one multiplex; `decdrm tx` sends a group, and `scripts/pi/stationctl`
+keeps it running on a Pi. The load for one to four carriers is in the build guide.
 ### Relaying an internet radio stream
 
 `[service.audio.input] url = "…"` takes the programme from an internet radio stream.

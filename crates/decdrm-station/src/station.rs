@@ -73,6 +73,30 @@ pub struct StationStatus {
     pub services: Vec<ServiceStatus>,
     /// A modulator (`[mdi]`): the MDI input and what was transmitted of it.
     pub mdi: Option<crate::modulator::ModulatorStatus>,
+    /// With several multiplexes: one entry per multiplex. The fields above then
+    /// describe the first one, while the output levels and the radio's counters are
+    /// the whole stream's.
+    pub multiplexes: Vec<MultiplexStatus>,
+}
+
+/// One multiplex of a group, for the status.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MultiplexStatus {
+    /// The DC carrier on air, Hz.
+    pub frequency_hz: u64,
+    /// E.g. `B / 10 kHz`.
+    pub mode: String,
+    /// Services in this multiplex.
+    pub services: usize,
+    /// Transmission frames (400 ms each) produced.
+    pub frames: u64,
+    /// RMS level of this multiplex's own 48 kHz output, dBFS.
+    pub output_rms_dbfs: f32,
+    /// SDC blocks produced.
+    pub sdc_blocks: u64,
+    /// Data field bytes used by the last SDC block, and the capacity.
+    pub sdc_bytes_used: usize,
+    pub sdc_capacity: usize,
 }
 
 /// Status of one service.

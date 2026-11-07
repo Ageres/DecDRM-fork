@@ -147,17 +147,35 @@ pub fn run(a: TxArgs) -> Result<()> {
 }
 
 fn print_status(s: &StationStatus) {
+    // A group's SDC is per multiplex: print it below, with the multiplexes.
+    let sdc = if s.multiplexes.is_empty() {
+        format!("; SDC {}/{} bytes", s.sdc_bytes_used, s.sdc_capacity)
+    } else {
+        String::new()
+    };
     println!(
-        "[{:6.1}s] output {:5.1} dBFS rms, {:5.1} dBFS peak, {} clipped; SDC {}/{} bytes{}{}",
+        "[{:6.1}s] output {:5.1} dBFS rms, {:5.1} dBFS peak, {} clipped{}{}{}",
         s.seconds,
         s.output_rms_dbfs,
         s.output_peak_dbfs,
         s.clipped_samples,
-        s.sdc_bytes_used,
-        s.sdc_capacity,
+        sdc,
         s.time_sent.as_ref().map(|t| format!(", time {t}")).unwrap_or_default(),
         if s.device.is_some() { format!(", {} underruns", s.device_underruns) } else { String::new() }
     );
+    for (i, m) in s.multiplexes.iter().enumerate() {
+        println!(
+            "          multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms, SDC {}/{} bytes",
+            i + 1,
+            m.frequency_hz as f64 / 1e6,
+            m.mode,
+            m.services,
+            if m.services == 1 { "" } else { "s" },
+            m.output_rms_dbfs,
+            m.sdc_bytes_used,
+            m.sdc_capacity
+        );
+    }
     if let Some(h) = &s.hackrf {
         let mut extra = String::new();
         if h.underruns > 0 {

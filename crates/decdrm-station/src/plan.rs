@@ -698,7 +698,7 @@ impl StationConfig {
         match self.validate_station()? {
             StationPlan::Single(plan) => Ok(plan),
             StationPlan::Group(_) => Err(StationError::config(
-                "several multiplexes are configured: transmitting them in one stream is not implemented yet (decdrm tx --check prints the group plan)",
+                "several multiplexes are configured: the GUI and Station::new run one multiplex; decdrm tx sends the group (and --check prints its plan)",
             )),
         }
     }
