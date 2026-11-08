@@ -1115,7 +1115,7 @@ fn services_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
                 ui.label(
                     RichText::new(format!(
                         "multiplex {}: {:.4} MHz, {}, {:.1} dBFS rms",
-                        k + 1,
+                        m.index + 1,
                         m.frequency_hz as f64 / 1e6,
                         m.mode,
                         m.output_rms_dbfs

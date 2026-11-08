@@ -176,10 +176,10 @@ fn print_status(s: &StationStatus) {
         s.time_sent.as_ref().map(|t| format!(", time {t}")).unwrap_or_default(),
         if s.device.is_some() { format!(", {} underruns", s.device_underruns) } else { String::new() }
     );
-    for (i, m) in s.multiplexes.iter().enumerate() {
+    for m in &s.multiplexes {
         println!(
             "          multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms, {} frames, SDC {}/{} bytes",
-            i + 1,
+            m.index + 1,
             m.frequency_hz as f64 / 1e6,
             m.mode,
             m.services.len(),

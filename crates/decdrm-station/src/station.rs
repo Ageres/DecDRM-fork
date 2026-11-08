@@ -83,6 +83,9 @@ pub struct StationStatus {
 /// One multiplex of a group, for the status.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MultiplexStatus {
+    /// Its position among the file's ``[[multiplex]]`` tables, 0-based (a disabled
+    /// multiplex is not in the status but keeps its number).
+    pub index: usize,
     /// The DC carrier on air, Hz.
     pub frequency_hz: u64,
     /// E.g. `B / 10 kHz`.

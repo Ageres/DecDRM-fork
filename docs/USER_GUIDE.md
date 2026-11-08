@@ -818,6 +818,11 @@ is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limi
 - **9 and 10 kHz occupancies** on a Raspberry Pi: 18 and 20 kHz need
   `resampler = "balanced"`, which the Pi cannot keep up with (see the build guide).
 
+A `[[multiplex]]` can be switched off without deleting it: `enabled = false` keeps its
+settings and services in the file but out of the stream - no feed is opened, no encoder
+runs, and it takes no room in the span, the levels or the load. `--check` prints it as
+`(off)`, and the other multiplexes keep their numbers.
+
 Each multiplex's 48 kHz baseband is combined with the others: one shared resampler
 brings a group of up to about 180 kHz of carrier separation (the intermediate rate is
 48, 96 or 192 kHz) to the radio's rate; a wider group (up to 1 MHz) resamples each

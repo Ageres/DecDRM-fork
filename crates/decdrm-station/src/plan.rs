@@ -433,6 +433,9 @@ pub enum GroupStrategy {
 /// One multiplex of a group.
 #[derive(Debug, Clone)]
 pub struct GroupedMultiplex {
+    /// Its position among the file's `[[multiplex]]` tables, 0-based (the disabled ones
+    /// are not in the plan but keep their numbers).
+    pub index: usize,
     /// The DC carrier on air, Hz.
     pub frequency_hz: u64,
     /// `frequency_hz - lo_hz`, Hz: where the multiplex sits in the stream.
@@ -488,11 +491,11 @@ impl GroupPlan {
                 cfg.resolve(f).display()
             );
         }
-        for (i, m) in self.multiplexes.iter().enumerate() {
+        for m in &self.multiplexes {
             let _ = writeln!(
                 s,
                 "  multiplex {}: {:.4} MHz (IF {:.0} kHz, level {:.1} dBFS)",
-                i + 1,
+                m.index + 1,
                 m.frequency_hz as f64 / 1e6,
                 m.offset_hz / 1e3,
                 m.level_dbfs
@@ -500,6 +503,15 @@ impl GroupPlan {
             for line in m.plan.describe_body(&m.cfg).lines() {
                 let _ = writeln!(s, "    {line}");
             }
+        }
+        for (i, m) in cfg.multiplexes.iter().enumerate() {
+            if m.enabled {
+                continue;
+            }
+            let _ = match m.frequency_hz {
+                Some(f) => writeln!(s, "  multiplex {}: {:.4} MHz (off)", i + 1, f as f64 / 1e6),
+                None => writeln!(s, "  multiplex {}: (off, no frequency)", i + 1),
+            };
         }
         match (self.strategy, self.intermediate_hz) {
             (GroupStrategy::SharedResampler, Some(fi)) => {
@@ -951,6 +963,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     }
 
     let mut numbered = Vec::new();
+    let mut disabled = Vec::new();
     for (i, m) in cfg.multiplexes.iter().enumerate() {
         if !m.unknown.is_empty() {
             let keys: Vec<&str> = m.unknown.keys().map(String::as_str).collect();
@@ -962,9 +975,13 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
             ));
         }
         match m.frequency_hz {
-            Some(frequency_hz) => numbered.push((i, m, frequency_hz)),
+            Some(frequency_hz) if m.enabled => numbered.push((i, m, frequency_hz)),
+            Some(frequency_hz) => disabled.push((i, frequency_hz)),
             None => p.push(format!("multiplex {}: frequency_hz is required (the channel's DC carrier on air)", i + 1)),
         }
+    }
+    if numbered.is_empty() && disabled.len() == cfg.multiplexes.len() && !cfg.multiplexes.is_empty() {
+        p.push("multiplexes: every multiplex is disabled (enabled = false); enable at least one");
     }
     let Some(min) = numbered.iter().map(|(_, _, f)| *f).min() else {
         return Err(p.into_error());
@@ -985,6 +1002,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     }
 
     let mut multiplexes = Vec::new();
+    let enabled = numbered.len();
     for (i, m, frequency_hz) in numbered {
         let offset_hz = frequency_hz as f64 - lo_hz;
         let level_dbfs = m.level_dbfs.unwrap_or(cfg.output.level_dbfs);
@@ -1001,7 +1019,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
             hs.if_offset_hz = offset_hz;
         }
         match build(&sub) {
-            Ok(plan) => multiplexes.push(GroupedMultiplex { frequency_hz, offset_hz, level_dbfs, cfg: sub, plan }),
+            Ok(plan) => multiplexes.push(GroupedMultiplex { index: i, frequency_hz, offset_hz, level_dbfs, cfg: sub, plan }),
             Err(StationError::Config(problems)) => {
                 for problem in problems.0 {
                     p.push(format!("multiplex {}: {problem}", i + 1));
@@ -1010,7 +1028,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
             Err(e) => return Err(e),
         }
     }
-    if multiplexes.len() != cfg.multiplexes.len() {
+    if multiplexes.len() != enabled {
         return Err(p.into_error());
     }
 

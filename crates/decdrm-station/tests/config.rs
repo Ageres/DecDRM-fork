@@ -972,7 +972,32 @@ input = { tone_hz = 440.0 }
     assert!(has(&p, "unknown field"), "{p:?}");
     // The plain two-multiplex file is valid.
     assert!(problems_of(multiplex_text(25_760_000, 25_780_000, -18, "")).is_empty());
+
+    // A disabled multiplex is out of the group: 1.24 MHz away, overlapping, or "0 dBFS"
+    // is fine, and its services are not opened; the plan prints it as (off).
+    let disabled = multiplex_text(25_760_000, 27_000_000, -18, "")
+        .replace("frequency_hz = 27000000", "frequency_hz = 27000000\nenabled = false");
+    let cfg = parse(&disabled);
+    assert_eq!(cfg.all_services().count(), 1, "only the enabled multiplex's service");
+    let decdrm_station::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
+        panic!("expected a group")
+    };
+    assert_eq!(group.multiplexes.len(), 1);
+    assert_eq!(group.multiplexes[0].index, 0);
+    assert!(group.describe(&cfg).contains("(off)"), "{}", group.describe(&cfg));
+    let overlap = multiplex_text(25_760_000, 25_765_000, -18, "")
+        .replace("frequency_hz = 25765000", "frequency_hz = 25765000\nenabled = false");
+    assert!(problems_of(overlap).is_empty());
+    let loud = multiplex_text(25_760_000, 25_780_000, -16, "")
+        .replace("frequency_hz = 25780000", "frequency_hz = 25780000\nenabled = false");
+    assert!(problems_of(loud).is_empty(), "one carrier at -16 dBFS fits");
+    // Every multiplex disabled is an error.
+    let none = multiplex_text(25_760_000, 25_780_000, -18, "")
+        .replace("occupancy = 3", "occupancy = 3\nenabled = false");
+    let p = problems_of(none);
+    assert!(has(&p, "every multiplex is disabled"), "{p:?}");
 }
+
 
 /// The checked-in example of a two-multiplex group validates.
 #[cfg(feature = "hackrf")]

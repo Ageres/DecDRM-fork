@@ -261,6 +261,7 @@ impl GroupStation {
             .map(|(m, station)| {
                 let s = station.status();
                 crate::station::MultiplexStatus {
+                    index: m.index,
                     frequency_hz: m.frequency_hz,
                     mode: format!("{} / {} kHz", m.plan.tx.mode, m.plan.tx.occupancy.bandwidth_khz()),
                     services: s.services.clone(),

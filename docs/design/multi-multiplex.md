@@ -74,7 +74,10 @@ id = 1                     # unique within its own multiplex, not across the sta
 
 Each multiplex gets its own `[channel]`-style fields (mode, occupancy, MSC/SDC mode,
 interleaving, protection) and its own `[[multiplex.service]]`. IDs are per multiplex:
-they travel in that multiplex's FAC/MSC and mean nothing to its neighbours.
+they travel in that multiplex's FAC/MSC and mean nothing to its neighbours. A multiplex
+can be switched off with `enabled = false` (the default is `true`): it stays in the
+file with its services but out of the plan - no station, no feeds, no room in the span,
+the levels or the load - and the plan prints it as `(off)`.
 
 A group can also write its composite to a file instead of the radio: then the stream's
 settings live in `[output]` (no `[output.hackrf]`) and `[output.file]` names the WAV or

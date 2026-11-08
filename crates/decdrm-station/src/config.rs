@@ -67,7 +67,9 @@ pub struct StationConfig {
 impl StationConfig {
     /// Every configured service: the top-level ones, or those inside `[[multiplex]]`.
     pub fn all_services(&self) -> impl Iterator<Item = &ServiceSettings> {
-        self.services.iter().chain(self.multiplexes.iter().flat_map(|m| m.services.iter()))
+        self.services
+            .iter()
+            .chain(self.multiplexes.iter().filter(|m| m.enabled).flat_map(|m| m.services.iter()))
     }
 
     /// Whether the programme ends by itself: every audio service reads a non-looping
@@ -152,8 +154,13 @@ pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
 /// level, its own channel parameters and its own services. With no `[[multiplex]]`
 /// tables the station is a single multiplex built from `[channel]`, `[[service]]` and
 /// `[output.hackrf] frequency_hz`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MultiplexSettings {
+    /// Transmit this multiplex: `false` keeps it in the file but out of the group - its
+    /// services are not opened or encoded, it takes no room in the span, the levels or
+    /// the load, and the plan prints it as `(off)`. Default: `true`.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
     /// Nominal frequency of the DRM channel on air, Hz (the DC carrier). Required when
     /// `[[multiplex]]` is used; `[output.hackrf] frequency_hz` is then ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +179,27 @@ pub struct MultiplexSettings {
     /// unknown-field check off, so the plan names them instead.
     #[serde(flatten, default, skip_serializing)]
     pub(crate) unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl Default for MultiplexSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            frequency_hz: None,
+            level_dbfs: None,
+            channel: ChannelSettings::default(),
+            services: Vec::new(),
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// Transmission parameters. Defaults: mode B, 10 kHz (SO 3), 64-QAM with protection

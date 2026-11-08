@@ -137,9 +137,13 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             cfg.output.iq_swap = false;
             let mut h = cfg.output.hackrf.clone().unwrap_or_default();
             let frequency_hz = (ov.hackrf_frequency_khz.max(0.0) * 1_000.0).round() as u64;
-            match cfg.multiplexes.first_mut() {
-                // A group's first multiplex takes the field; the others stay as the file
-                // has them.
+            // A group's first enabled multiplex takes the field; the others stay as
+            // the file has them.
+            let first = match cfg.multiplexes.iter_mut().find(|m| m.enabled) {
+                Some(first) => Some(first),
+                None => cfg.multiplexes.first_mut(),
+            };
+            match first {
                 Some(first) => first.frequency_hz = Some(frequency_hz),
                 None => h.frequency_hz = frequency_hz,
             }
@@ -206,10 +210,12 @@ pub fn inputs_finite(cfg: &StationConfig) -> bool {
 pub fn hackrf_fields(text: &str) -> Option<(f64, f64, u32, bool)> {
     let cfg = StationConfig::from_toml_str(text).ok()?;
     let h = cfg.output.hackrf?;
-    // With [[multiplex]] the quick frequency field edits the first multiplex.
+    // With [[multiplex]] the quick frequency field edits the first enabled multiplex.
     let frequency_hz = cfg
         .multiplexes
-        .first()
+        .iter()
+        .find(|m| m.enabled)
+        .or_else(|| cfg.multiplexes.first())
         .and_then(|m| m.frequency_hz)
         .unwrap_or(h.frequency_hz);
     Some((
