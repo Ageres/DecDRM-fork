@@ -870,9 +870,10 @@ url = "https://radio.example/live.mp3"
   stands for its first stream. An HLS playlist (`.m3u8` with `#EXT-X-` tags, which
   radio stations increasingly serve; a master playlist and its media playlist are
   followed) is played segment by segment from the live edge: AAC in ADTS or in
-  MPEG-TS, MP3, and AES-128 encrypted segments. HLS with fragmented-MP4 segments
-  (`#EXT-X-MAP`), `SAMPLE-AES` encryption or low-latency parts, DASH, MP4 and WMA
-  streams are not supported (the station reports it).
+  MPEG-TS, MP3, and AES-128 encrypted segments. A playlist that stops advancing is
+  reported as a stall; one that ends (`#EXT-X-ENDLIST`) is played once and starts
+  over. HLS with fragmented-MP4 segments (`#EXT-X-MAP`), `SAMPLE-AES` encryption,
+  DASH, MP4 and WMA streams are not supported (the station reports it).
 - **Codecs:** MP3 (and MP2), AAC, HE-AAC and HE-AAC v2 in ADTS, Ogg Vorbis, Ogg Opus
   (mono or stereo), FLAC (native or in Ogg). The format is recognised from the data,
   from the server's `Content-Type` only when the data does not tell. The audio is mixed
