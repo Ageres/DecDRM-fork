@@ -37,6 +37,8 @@ thiserror.workspace = true
 # Web stream input: MP3/MP2 and Vorbis/FLAC decoders (the same symphonia as decdrm-io's
 # WAV/FLAC reader; the stream framing and the Ogg demuxer are DecDRM's own).
 symphonia = { version = "0.6.1", default-features = false, features = ["mp1", "mp2", "mp3", "vorbis", "flac"] }
+# AES-128-CBC for encrypted HLS segments (EXT-X-KEY, pure Rust, AES-NI/ARMv8 on both)
+aes = "0.9"
 # Web stream input over HTTPS: TLS with the ring crypto provider (no CMake/NASM needed)
 # and the operating system's trusted root certificates.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

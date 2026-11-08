@@ -209,8 +209,7 @@ fn flac_streams() {
     }
 }
 
-/// Playlists (M3U with a relative entry, PLS) and redirects lead to the stream; HLS is
-/// refused.
+/// Playlists (M3U with a relative entry, PLS) and redirects lead to the stream.
 #[test]
 fn playlists_and_redirects() {
     let data = adts(AacProfile::Lc, 48_000, 1, 64_000, &tone(48_000, 1, 1000.0, 0.3, 3.0));
@@ -218,7 +217,6 @@ fn playlists_and_redirects() {
         ("/live", Stream::new("audio/aac", data).handler()),
         ("/go", redirect("302 Found", "/live")),
         ("/lists/radio.m3u", body("200 OK", "audio/x-mpegurl", "#EXTM3U\r\n#EXTINF:-1,Test\r\n../go\r\n")),
-        ("/hls.m3u8", body("200 OK", "application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg1.aac\n")),
         ("/moved", redirect("301 Moved Permanently", "/radio.pls")),
     ];
     // The PLS names the stream by its absolute URL: the port is known after starting,
@@ -241,8 +239,46 @@ fn playlists_and_redirects() {
     let mut src = WebStreamSource::open(options(&server.url("/moved"), 24_000, 1)).unwrap();
     read(&mut src, 2);
     assert_eq!(src.status().stream_url, Some(server.url("/live")));
-    let err = WebStreamSource::open(options(&server.url("/hls.m3u8"), 24_000, 1)).err().unwrap();
-    assert!(err.contains("HLS"), "{err}");
+}
+
+/// HLS: a master playlist names a media playlist whose live window moves on; the
+/// segments are downloaded in order and joined into one audio stream.
+#[test]
+fn hls_live_segments() {
+    // Every segment carries the same one second of a 1000 Hz tone: the stream is
+    // continuous only if the reader takes them in order.
+    let audio = adts(AacProfile::Lc, 48_000, 1, 64_000, &tone(48_000, 1, 1000.0, 0.3, 1.0));
+    // The window of request n: segments n and n+1 (the playlist moves on every time).
+    let media = std::sync::Arc::new(|req: &server::Req, out: &mut dyn std::io::Write| {
+        let seq = req.index;
+        let text = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{seq}\n\
+             #EXTINF:1.0,\nseg.aac\n#EXTINF:1.0,\nseg.aac\n"
+        );
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        )
+    });
+    let server = Server::start(vec![
+        (
+            "/hls/master.m3u8",
+            body("200 OK", "application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"\nmedia.m3u8?hls=1\n"),
+        ),
+        ("/hls/media.m3u8?hls=1", media),
+        ("/hls/seg.aac", body("200 OK", "audio/aac", audio)),
+    ]);
+    let mut src = WebStreamSource::open(options(&server.url("/hls/master.m3u8"), 48_000, 1)).unwrap();
+    let out = read(&mut src, 6);
+    let st = src.status();
+    assert_eq!(st.stream_url, Some(server.url("/hls/media.m3u8?hls=1")), "{st:?}");
+    assert_eq!(st.bitrate, Some(128), "{st:?}");
+    let log = src.take_log();
+    assert!(logged(&log, "HLS: "), "{log:?}");
+    let (f, _, _) = dominant_tone(&out, 1, 0, 48_000, 900.0, 1100.0);
+    assert!((f - 1000.0).abs() < 25.0, "{f} Hz");
+    assert!(server.hits("/hls/media.m3u8?hls=1") >= 2, "the playlist is polled for more");
 }
 
 /// Chunked transfer coding (HTTP/1.1 servers and proxies).

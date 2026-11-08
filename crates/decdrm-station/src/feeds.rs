@@ -515,6 +515,7 @@ pub fn fetch_feed(url: &Url, max_items: usize, stop: &Arc<AtomicBool>) -> Result
         icy_metadata: false,
         connect_timeout: Duration::from_secs(10),
         io_timeout: Duration::from_secs(20),
+        range: None,
     };
     let resp = http::get(url, &req).map_err(|e| match e {
         HttpError::Stopped => "stopped".to_string(),

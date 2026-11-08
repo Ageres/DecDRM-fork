@@ -1,7 +1,7 @@
 //! Playlists that point to a stream: M3U / M3U8 (a list of URLs, `#` lines are comments
-//! or `#EXTINF` information) and PLS (`[playlist]` with `File1=…`). HLS playlists — M3U8
-//! files listing media *segments* (`#EXT-X-…` tags) — are recognised and refused: the
-//! station plays continuous streams only.
+//! or `#EXTINF` information) and PLS (`[playlist]` with `File1=:`). HLS playlists - M3U8
+//! files listing media *segments* (`#EXT-X-:`) - are handled by [`super::hls`], not here:
+//! this module only resolves the stream a plain playlist names.
 
 /// Content types of playlists.
 pub(crate) fn is_playlist_type(content_type: &str) -> bool {

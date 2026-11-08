@@ -223,6 +223,8 @@ pub(crate) struct Request {
     pub connect_timeout: Duration,
     /// Longest wait for the response header and, later, for more body data.
     pub io_timeout: Duration,
+    /// Ask for this byte range of the body (`Range: bytes=start-end`, inclusive).
+    pub range: Option<(u64, u64)>,
 }
 
 /// A response whose status was 2xx, with its body still to be read.
@@ -289,6 +291,9 @@ fn request(url: &Url, req: &Request) -> Result<Head, HttpError> {
     );
     if req.icy_metadata {
         head.push_str("Icy-MetaData: 1\r\n");
+    }
+    if let Some((start, end)) = req.range {
+        head.push_str(&format!("Range: bytes={start}-{end}\r\n"));
     }
     if let Some(user) = &url.userinfo {
         head.push_str(&format!("Authorization: Basic {}\r\n", base64(user.as_bytes())));
