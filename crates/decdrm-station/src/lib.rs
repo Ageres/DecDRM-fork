@@ -38,14 +38,12 @@
 
 pub mod afs;
 mod audio;
-#[cfg(feature = "hackrf")]
 mod combine;
 pub mod config;
 mod data;
 mod error;
 mod feeds;
 mod fac;
-#[cfg(feature = "hackrf")]
 mod group;
 #[cfg(feature = "hackrf")]
 mod hackrf;
@@ -73,7 +71,6 @@ pub use hackrf::{HackrfDevice, HackrfStatus};
 pub use modulator::ModulatorStatus;
 pub use data::load_journaline;
 pub use error::{ConfigProblems, Result, StationError};
-#[cfg(feature = "hackrf")]
 pub use group::GroupStation;
 pub use plan::{
     AppPlan, AudioPlan, GroupPlan, GroupStrategy, GroupedMultiplex, MultiplexPlan, ServicePlan, StationPlan,

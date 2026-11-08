@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use decdrm_station::{GroupStation, ServiceStatus, Station, StationConfig, StationPlan, StationStatus, StopHandle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -34,12 +34,25 @@ pub struct TxArgs {
     snr: Option<f64>,
 }
 
+/// Apply `--output`: write to `out` instead of the configured outputs. A group records
+/// its composite instead of the radio, at the radio's rate when its section is there.
+fn apply_output(cfg: &mut StationConfig, out: &Path) -> Result<()> {
+    // Relative to the current directory, not to the configuration file.
+    cfg.output.file = Some(std::path::absolute(out).with_context(|| format!("output path {}", out.display()))?);
+    cfg.output.device = None;
+    if !cfg.multiplexes.is_empty() {
+        if cfg.output.sample_rate_hz.is_none() {
+            cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
+        }
+        cfg.output.hackrf = None;
+    }
+    Ok(())
+}
+
 pub fn run(a: TxArgs) -> Result<()> {
     let mut cfg = StationConfig::load(&a.config)?;
     if let Some(out) = &a.output {
-        // Relative to the current directory, not to the configuration file.
-        cfg.output.file = Some(std::path::absolute(out).with_context(|| format!("output path {}", out.display()))?);
-        cfg.output.device = None;
+        apply_output(&mut cfg, out)?;
     }
     if a.channel_model.is_some() || a.snr.is_some() {
         let sim = cfg.simulate.get_or_insert_with(|| decdrm_station::SimulateSettings::new(1, None));
@@ -291,5 +304,53 @@ impl Running {
             Self::Single(station) => station.finish()?,
             Self::Group(group) => group.finish()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GROUP: &str = r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+resampler = "fast"
+[[multiplex]]
+frequency_hz = 25_760_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+[[multiplex]]
+frequency_hz = 25_780_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+[[multiplex.service]]
+label = "B"
+id = 0x43
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 880.0 }
+"#;
+
+    /// `--output` turns a radio group into a composite file at the radio's rate.
+    #[test]
+    fn a_group_records_its_composite_instead_of_the_radio() {
+        let mut cfg = StationConfig::from_toml_str(GROUP).unwrap();
+        apply_output(&mut cfg, Path::new("group.wav")).unwrap();
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert!(cfg.output.device.is_none());
+        assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the radio's rate");
+        assert!(cfg.output.file.as_deref().unwrap().to_string_lossy().ends_with("group.wav"));
+        assert!(cfg.validate_station().is_ok());
     }
 }

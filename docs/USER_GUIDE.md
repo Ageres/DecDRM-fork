@@ -267,7 +267,7 @@ download the file in a browser and save it there under the name shown. A file fo
 earlier season stays in use, with a warning, until you update. More sources go into
 `sources.toml` in that folder:
 
-```toml
+````toml
 [[source]]
 name = "mylist"                                # decdrm schedule --source mylist
 title = "My DRM list"
@@ -616,7 +616,7 @@ With an `[mdi]` section the station transmits the multiplex a content server sen
 (MDI, ETSI TS 102 820), instead of its own services. Content servers include Dream
 `--mdiout`, commercial ones, or a recording:
 
-```toml
+````toml
 [mdi]
 input = "8000"            # a UDP port, group:port, interface:group:port, or a recording
 # buffer_frames = 3       # with a sound card: frames held against network jitter
@@ -679,7 +679,7 @@ complex baseband is resampled to the HackRF's sample rate and shifted to an inte
 frequency inside its passband, so the DRM channel keeps clear of the radio's DC spike
 and LO leakage; the local oscillator runs at the nominal frequency minus that IF.
 
-```toml
+````toml
 [output]
 format = "iq"        # required, with iq_offset_hz = 0: the HackRF does its own IF shift
 
@@ -773,7 +773,7 @@ One radio can send several DRM multiplexes at once, each on its own frequency, w
 they fit the radio's passband. Add a `[[multiplex]]` table per frequency instead of
 the top-level `[channel]` and `[[service]]`:
 
-```toml
+````toml
 [output]
 format = "iq"
 level_dbfs = -18           # the default for the multiplexes below
@@ -824,6 +824,19 @@ brings a group of up to about 180 kHz of carrier separation (the intermediate ra
 multiplex first. The group's own IF (where its centre
 sits relative to the local oscillator) is applied to the whole stream.
 
+To record the composite instead of transmitting it, give `[output] file` (I/Q) and no
+`[output.hackrf]`, with the stream's rate and the resampler quality in `[output]`:
+
+```toml
+[output]
+format = "iq"
+file = "group.wav"
+sample_rate_hz = 2_000_000  # the composite's rate, not the radio's
+resampler = "fast"          # the composite's resamplers
+```
+`decdrm tx station.toml --output other.wav` does the same to a radio configuration:
+it records the stream the radio would send, at the radio's rate.
+
 The GUI transmits a group too: the quick frequency field edits the first multiplex, and the Services card lists them all. `scripts/pi/stationctl`
 keeps it running on a Pi. The load for one to four carriers is in the build guide.
 ### Relaying an internet radio stream
@@ -831,7 +844,7 @@ keeps it running on a Pi. The load for one to four carriers is in the build guid
 `[service.audio.input] url = "…"` takes the programme from an internet radio stream.
 Rebroadcasting someone else's programme needs their permission.
 
-```toml
+````toml
 [service.audio]
 codec = "he-aac"
 text = ["Relayed by DecDRM"]       # optional; the stream's titles go first
@@ -880,7 +893,7 @@ A Journaline application can take its pages from RSS or Atom feeds instead of a 
 file. The station fetches them when it starts, then again on a schedule, and changes go
 on the air at once. Rebroadcasting someone else's news needs their permission.
 
-```toml
+````toml
 [[service]]
 label = "News"
 id = 0xD0D002

@@ -28,8 +28,10 @@ Compared with the base (`git diff f387499..HEAD`):
   write (shown as *recoveries* in the status).
 - **Several multiplexes in one stream** (`[[multiplex]]`): every multiplex with its own
   frequency, channel and services, planned and checked as a group (up to four carriers,
-  at most 1 MHz apart) and combined into one HackRF stream, with one shared resampler
-  for a narrow group and one resampler per multiplex for a wide one.- **The resampler setting** (`resampler = "fast" | "balanced" | "high"`): the 48 kHz
+  at most 1 MHz apart) and combined into one stream, with one shared resampler for a
+  narrow group and one resampler per multiplex (a thread each) for a wide one; a group
+  can also write its composite (I/Q at its own rate) to a file instead of the radio.
+- **The resampler setting** (`resampler = "fast" | "balanced" | "high"`): the 48 kHz
   baseband has to be resampled to the radio's sample rate, which is the most expensive
   step on a small machine. The setting trades quality for CPU, and the transmit plan
   warns about the combinations that cannot keep real time.

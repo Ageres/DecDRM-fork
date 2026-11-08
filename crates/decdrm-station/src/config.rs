@@ -258,6 +258,13 @@ pub struct OutputSettings {
     /// Transmit through a HackRF One (see [`HackrfSettings`]); needs
     /// `format = "iq"` with `iq_offset_hz = 0` (the HackRF does its own IF shift).
     pub hackrf: Option<HackrfSettings>,
+    /// The composite's sample rate, Hz (`[[multiplex]]` only): the rate of the one
+    /// stream that goes to the radio or the file. Default: the `[output.hackrf]` one
+    /// (both must agree when both are set); a group that only writes a file must set it.
+    pub sample_rate_hz: Option<u32>,
+    /// The quality of the composite's resamplers (`[[multiplex]]` only). Default: the
+    /// `[output.hackrf]` one, or `balanced`.
+    pub resampler: Option<ResamplerSetting>,
 }
 
 impl Default for OutputSettings {
@@ -274,6 +281,8 @@ impl Default for OutputSettings {
             level_dbfs: decdrm_core::tx::output::DEFAULT_LEVEL_DBFS,
             band_limit: true,
             hackrf: None,
+            sample_rate_hz: None,
+            resampler: None,
         }
     }
 }

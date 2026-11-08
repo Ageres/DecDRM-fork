@@ -275,6 +275,9 @@ repository, the build, the kernel module and udev, the radio, the station.
    measure first: `vcgencmd get_throttled` must stay `0x0`, and
    the station's status line must show no underruns. `--duration 20` with a station
    file that has one, two and four `[[multiplex]]` tables measures it, as above.
+   `--output FILE` records the composite to a WAV/FLAC instead of the radio (the
+   stream's rate then comes from `[output.hackrf]` or `[output] sample_rate_hz`),
+   which also measures the load without a radio.
 
 9. **systemd.** A unit for a station, with the udev rule's group and the log in
    the journal (running as root is unnecessary). Change the user and the paths to

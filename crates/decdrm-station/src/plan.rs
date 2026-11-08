@@ -480,6 +480,13 @@ impl GroupPlan {
                 if h.amp_enable { ", RF amp on" } else { "" },
                 h.resampler
             );
+        } else if let Some(f) = &cfg.output.file {
+            let _ = writeln!(
+                s,
+                "composite: {} kHz I/Q -> {}",
+                self.sample_rate_hz / 1_000,
+                cfg.resolve(f).display()
+            );
         }
         for (i, m) in self.multiplexes.iter().enumerate() {
             let _ = writeln!(
@@ -896,10 +903,43 @@ fn build_mdi(cfg: &StationConfig, m: &crate::config::MdiSettings) -> Result<Mult
 /// around one local oscillator and checked as a whole (span, overlap, strategy, level).
 fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     let mut p = Problems::default();
-    let Some(h) = &cfg.output.hackrf else {
-        p.push("multiplexes: [[multiplex]] needs [output.hackrf] (one stream, one radio)");
-        return Err(p.into_error());
+    let radio = cfg.output.hackrf.as_ref();
+    if radio.is_none() && cfg.output.file.is_none() {
+        p.push("multiplexes: a group needs [output.hackrf] (the radio) or [output.file] (the composite)");
+    }
+    if radio.is_some() && cfg.output.file.is_some() {
+        p.push("multiplexes: one stream: either [output.hackrf] or [output.file], not both");
+    }
+    if cfg.output.device.is_some() {
+        p.push("multiplexes: with [[multiplex]] the output is [output.hackrf] or [output.file] (one stream), not a sound card");
+    }
+    if radio.is_none() {
+        if cfg.output.format != SignalFormat::Iq {
+            p.push("multiplexes: a composite file is I/Q: [output] format = \"iq\"");
+        }
+        if cfg.output.iq_offset_hz != 0.0 {
+            p.push(format!(
+                "multiplexes: iq_offset_hz {} is not used with [[multiplex]] (the multiplexes' offsets place the carriers)",
+                cfg.output.iq_offset_hz
+            ));
+        }
+    }
+    // One stream, one rate: [output] names it, the radio's section has to agree.
+    let sample_rate_hz = match (cfg.output.sample_rate_hz, radio.map(|h| h.sample_rate_hz)) {
+        (Some(stream), Some(radio)) if stream != radio => {
+            p.push(format!(
+                "multiplexes: [output] sample_rate_hz {stream} and [output.hackrf] sample_rate_hz {radio} differ; the stream has one rate"
+            ));
+            stream
+        }
+        (Some(stream), _) => stream,
+        (None, Some(rate)) => rate,
+        (None, None) => {
+            p.push("multiplexes: a file group needs [output] sample_rate_hz (the composite's rate)");
+            2_000_000
+        }
     };
+    let if_offset_hz = radio.map_or(0.0, |h| h.if_offset_hz);
     if !cfg.services.is_empty() {
         p.push("multiplexes: with [[multiplex]] the services belong inside the multiplexes ([[multiplex.service]])");
     }
@@ -909,9 +949,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     if cfg.channel != ChannelSettings::default() {
         p.push("multiplexes: [channel] is not used with [[multiplex]] (each multiplex has its own mode, occupancy and protection)");
     }
-    if cfg.output.file.is_some() || cfg.output.device.is_some() {
-        p.push("multiplexes: with [[multiplex]] the output is [output.hackrf] (a composite file comes later)");
-    }
+
     let mut numbered = Vec::new();
     for (i, m) in cfg.multiplexes.iter().enumerate() {
         if !m.unknown.is_empty() {
@@ -941,8 +979,8 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
             MAX_SEPARATION_HZ / 1e3
         ));
     }
-    let lo_hz = centre - h.if_offset_hz;
-    if !(1_000_000.0..=6_000_000_000.0).contains(&lo_hz) {
+    let lo_hz = centre - if_offset_hz;
+    if radio.is_some() && !(1_000_000.0..=6_000_000_000.0).contains(&lo_hz) {
         p.push(format!("multiplexes: the local oscillator at {lo_hz:.0} Hz is outside the HackRF's 1 MHz-6 GHz range"));
     }
 
@@ -955,6 +993,9 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
         sub.channel = m.channel.clone();
         sub.services = m.services.clone();
         sub.output.level_dbfs = level_dbfs;
+        // The stream's settings are the group's, not a multiplex's.
+        sub.output.sample_rate_hz = None;
+        sub.output.resampler = None;
         if let Some(hs) = sub.output.hackrf.as_mut() {
             hs.frequency_hz = frequency_hz;
             hs.if_offset_hz = offset_hz;
@@ -1012,7 +1053,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
         .iter()
         .map(|m| {
             let (low, high) = decdrm_core::tx::output::carrier_span_hz(m.plan.layout);
-            let relative = m.offset_hz - h.if_offset_hz;
+            let relative = m.offset_hz - if_offset_hz;
             (relative + low).abs().max((relative + high).abs())
         })
         .fold(0.0_f64, f64::max);
@@ -1047,8 +1088,8 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     Ok(GroupPlan {
         multiplexes,
         lo_hz,
-        if_offset_hz: h.if_offset_hz,
-        sample_rate_hz: h.sample_rate_hz,
+        if_offset_hz,
+        sample_rate_hz,
         span_hz,
         signal_span_hz,
         intermediate_hz,
@@ -1061,6 +1102,12 @@ fn build(cfg: &StationConfig) -> Result<MultiplexPlan> {
         return build_mdi(cfg, m);
     }
     let mut p = Problems::default();
+    if cfg.output.sample_rate_hz.is_some() {
+        p.push("output: sample_rate_hz is for [[multiplex]] (a single multiplex's rate is the output's)");
+    }
+    if cfg.output.resampler.is_some() {
+        p.push("output: resampler is for [[multiplex]] (a single multiplex takes [output.hackrf]'s resampler)");
+    }
     let ch = &cfg.channel;
 
     // --- Channel.

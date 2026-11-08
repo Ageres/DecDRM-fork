@@ -1,4 +1,5 @@
-//! A station that sends several multiplexes through one HackRF One (`[[multiplex]]`).
+//! A station that sends several multiplexes as one stream (`[[multiplex]]`): through
+//! a HackRF One, or to a composite file.
 //!
 //! Every multiplex runs as its own [`Station`] (its encoders, its plan, its channel
 //! simulator) but with no output of its own: each frame's 48 kHz complex baseband goes
@@ -12,17 +13,61 @@
 use crate::combine::Combiner;
 use crate::config::StationConfig;
 use crate::error::{Result, StationError};
+#[cfg(feature = "hackrf")]
 use crate::hackrf::HackrfSink;
+use decdrm_io::FileWriter;
 use crate::plan::{FRAME_SECONDS, GroupPlan};
 use crate::station::{Station, StationStatus, StopHandle};
 
-/// A group of multiplexes transmitting through one HackRF One.
+/// Where a group's one stream goes: the radio, or a composite file.
+enum GroupSink {
+    File(FileWriter),
+    #[cfg(feature = "hackrf")]
+    Hackrf(Box<HackrfSink>),
+}
+
+impl GroupSink {
+    fn write(&mut self, samples: &[f32], stop: &StopHandle) -> Result<()> {
+        match self {
+            Self::File(f) => {
+                // A file has no queue to wait on.
+                let _ = stop;
+                f.write(samples).map_err(StationError::Output)
+            }
+            #[cfg(feature = "hackrf")]
+            Self::Hackrf(h) => h.write(samples, stop),
+        }
+    }
+
+    /// Everything still queued: the radio's buffer, or the file's header.
+    fn finish(&mut self, stop: &StopHandle) -> Result<()> {
+        match self {
+            Self::File(f) => {
+                let _ = stop;
+                f.flush().map_err(StationError::Output)
+            }
+            #[cfg(feature = "hackrf")]
+            Self::Hackrf(h) => h.drain(stop),
+        }
+    }
+
+    /// The samples the 8-bit conversion had to clip (a file keeps 16 bits or more).
+    fn clipped_samples(&self) -> u64 {
+        match self {
+            Self::File(_) => 0,
+            #[cfg(feature = "hackrf")]
+            Self::Hackrf(h) => h.clipped_samples(),
+        }
+    }
+}
+
+/// A group of multiplexes as one stream: the radio, or a composite file.
 pub struct GroupStation {
     group: GroupPlan,
     /// One per multiplex, each feeding no sink.
     stations: Vec<Station>,
     combiner: Combiner,
-    sink: HackrfSink,
+    sink: GroupSink,
     /// The combined stream of the last frame (the radio's rate, interleaved I/Q).
     samples: Vec<f32>,
     stop: StopHandle,
@@ -39,19 +84,39 @@ impl GroupStation {
     /// Like [`Self::new`] with a stop handle made beforehand (see
     /// [`Station::with_plan_and_stop`]).
     pub fn with_stop(cfg: StationConfig, group: GroupPlan, stop: StopHandle) -> Result<Self> {
-        let Some(h) = cfg.output.hackrf.clone() else {
-            return Err(StationError::config("a group needs [output.hackrf] (one stream, one radio)"));
+        let sink = match &cfg.output.hackrf {
+            #[cfg(feature = "hackrf")]
+            Some(h) => {
+                // The radio sends the group's centre; its IF is the group's.
+                let centre_hz = (group.lo_hz + group.if_offset_hz).round();
+                if !(1_000_000.0..=6_000_000_000.0).contains(&centre_hz) {
+                    return Err(StationError::config("the group's centre is outside the HackRF's 1 MHz-6 GHz range"));
+                }
+                let mut settings = h.clone();
+                settings.frequency_hz = centre_hz as u64;
+                settings.if_offset_hz = group.if_offset_hz;
+                GroupSink::Hackrf(Box::new(HackrfSink::open_resampled(&settings)?))
+            }
+            #[cfg(not(feature = "hackrf"))]
+            Some(_) => {
+                return Err(StationError::config(
+                    "this build has no HackRF support: write the composite to [output.file]",
+                ));
+            }
+            None => {
+                // A composite file: one I/Q stream at the group's rate around DC.
+                let file = crate::output::open_file_at(&cfg, group.sample_rate_hz, 2)?
+                    .ok_or_else(|| StationError::config("a group needs [output.hackrf] or [output.file]"))?;
+                GroupSink::File(file)
+            }
         };
-        // The radio sends the group's centre; its IF is the group's.
-        let centre_hz = (group.lo_hz + group.if_offset_hz).round();
-        if !(1_000_000.0..=6_000_000_000.0).contains(&centre_hz) {
-            return Err(StationError::config("the group's centre is outside the HackRF's 1 MHz-6 GHz range"));
-        }
-        let mut settings = h.clone();
-        settings.frequency_hz = centre_hz as u64;
-        settings.if_offset_hz = group.if_offset_hz;
-        let sink = HackrfSink::open_resampled(&settings)?;
-        let combiner = Combiner::new(&group, h.resampler)?;
+        // The radio's own resampler setting is the composite's too, as before.
+        let quality = cfg
+            .output
+            .resampler
+            .or_else(|| cfg.output.hackrf.as_ref().map(|h| h.resampler))
+            .unwrap_or_default();
+        let combiner = Combiner::new(&group, quality)?;
         // Every station waits for its first web-stream audio (up to 20 s), so they
         // start together: three streams must not add up to a minute.
         let started = std::thread::scope(|scope| {
@@ -116,13 +181,13 @@ impl GroupStation {
     }
 
     /// End the transmission: the combiner's tail, then the radio's drain (unless
-    /// stopped). Returns the final status.
+    /// stopped) or the file's header. Returns the final status.
     pub fn finish(mut self) -> Result<StationStatus> {
         self.combiner.flush(&mut self.samples);
         if !self.samples.is_empty() {
             self.sink.write(&self.samples, &self.stop)?;
         }
-        self.sink.drain(&self.stop)?;
+        self.sink.finish(&self.stop)?;
         self.update_status();
         Ok(self.status)
     }
@@ -177,7 +242,11 @@ impl GroupStation {
         let mut st = self.stations.first().map_or_else(StationStatus::default, |s| s.status().clone());
         st.frames = self.frames;
         st.seconds = self.frames as f64 * FRAME_SECONDS;
-        st.output_file = None;
+        st.output_file = match &self.sink {
+            GroupSink::File(f) => Some(f.path().to_path_buf()),
+            #[cfg(feature = "hackrf")]
+            GroupSink::Hackrf(_) => None,
+        };
         st.device = None;
         st.device_underruns = 0;
         st.device_buffer_ms = None;
@@ -211,8 +280,8 @@ impl GroupStation {
         st.output_rms_dbfs = 20.0 * ((sum / n as f64).sqrt() as f32).max(1e-10).log10();
         st.output_peak_dbfs = 20.0 * peak.max(1e-10).log10();
         #[cfg(feature = "hackrf")]
-        {
-            let s = self.sink.settings();
+        if let GroupSink::Hackrf(sink) = &self.sink {
+            let s = sink.settings();
             let half = self.group.signal_span_hz / 2.0;
             st.hackrf = Some(crate::hackrf::HackrfStatus {
                 frequency_hz: s.frequency_hz,
@@ -224,10 +293,10 @@ impl GroupStation {
                 tx_gain_db: s.tx_gain_db,
                 amp: s.amp_enable,
                 resampler: s.resampler,
-                transmitted_s: self.sink.transmitted_s(),
-                queued_s: self.sink.queued_s(),
-                underruns: self.sink.underruns(),
-                recoveries: self.sink.recoveries(),
+                transmitted_s: sink.transmitted_s(),
+                queued_s: sink.queued_s(),
+                underruns: sink.underruns(),
+                recoveries: sink.recoveries(),
             });
         }
         self.status = st;

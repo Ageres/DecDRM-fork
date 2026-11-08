@@ -1,8 +1,8 @@
 # Several multiplexes in one HackRF stream
 
 **Status: the configuration, the plan, the combiner, the per-multiplex status, the
-GUI and the thread per multiplex (wide spans) are implemented; the Pi 4 measurement
-remains.** The design maximum is **4 multiplexes** (mode B,
+GUI, the thread per multiplex (wide spans) and the composite file are implemented; the
+Pi 4 measurement remains.** The design maximum is **4 multiplexes** (mode B,
 9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76 and
 25.78 MHz). A Raspberry Pi 4 is to be measured with 1, 2 and 4 carriers after the
 implementation, so the load numbers below are predictions.
@@ -77,6 +77,23 @@ id = 1                     # unique within its own multiplex, not across the sta
 Each multiplex gets its own `[channel]`-style fields (mode, occupancy, MSC/SDC mode,
 interleaving, protection) and its own `[[multiplex.service]]`. IDs are per multiplex:
 they travel in that multiplex's FAC/MSC and mean nothing to its neighbours.
+
+A group can also write its composite to a file instead of the radio: then the stream's
+settings live in `[output]` (no `[output.hackrf]`) and `[output.file]` names the WAV or
+FLAC:
+
+```toml
+[output]
+format = "iq"
+file = "group.wav"
+sample_rate_hz = 2_000_000  # the composite's rate
+resampler = "fast"          # the composite's resamplers
+```
+
+With a radio, `[output.hackrf] sample_rate_hz` is the stream's rate; `[output]
+sample_rate_hz` may repeat it (the plan rejects a disagreement). `decdrm tx --output
+FILE` records what a radio configuration would have sent: it drops `[output.hackrf]`
+and keeps its rate.
 
 The services, their feeds and the web streams are per multiplex. `[simulate]` and
 `[afs]` stay station-wide and apply to every multiplex (the same channel simulator and

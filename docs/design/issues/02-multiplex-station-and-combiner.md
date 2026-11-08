@@ -8,8 +8,8 @@ Suggested labels: `enhancement`, `hackrf`, `station`.
 > `Station` per multiplex (with its outputs stripped) and a `Combiner`, rather than a
 > `Station`/`Multiplex` split; the single-multiplex path stayed untouched and is
 > byte-identical. Wide spans (above about 180 kHz) run one stage per multiplex on its
-> own thread, one per multiplex per frame. Still open from this issue: a composite
-> *file* output (`output.sample_rate_hz`).
+> own thread, one per multiplex per frame, and the composite can go to a file
+> (`[output] sample_rate_hz`) instead of the radio.
 
 ## Why
 
@@ -44,9 +44,9 @@ four multiplexes have to be built, shifted to their offsets and summed into one 
 
 - [ ] `Multiplex`/`Station` split, single-multiplex regression hash.
 - [ ] The combiner and the intermediate-rate choice.
-- [ ] Wide spans: per-multiplex resamplers and threads.
+- [x] Wide spans: per-multiplex resamplers and threads.
 - [ ] `HackrfSink` without its resampler.
-- [ ] `output.sample_rate_hz`.
+- [x] `output.sample_rate_hz`.
 - [ ] Tests (config, spectrum, regression, stop).
 
 ## Acceptance

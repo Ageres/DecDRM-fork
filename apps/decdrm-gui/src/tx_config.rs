@@ -110,6 +110,16 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             };
             cfg.output.file = Some(file.clone());
             cfg.output.device = None;
+            // A group writes its composite (I/Q at the stream's rate) instead of the
+            // radio; the rate comes from the file's [output.hackrf] if it has one.
+            if !cfg.multiplexes.is_empty() {
+                if cfg.output.sample_rate_hz.is_none() {
+                    cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
+                }
+                cfg.output.hackrf = None;
+                cfg.output.format = SignalFormat::Iq;
+                cfg.output.iq_offset_hz = 0.0;
+            }
         }
         TxOutput::Device => {
             cfg.output.device = Some(ov.device.clone().unwrap_or_else(|| "default".into()));
@@ -381,6 +391,26 @@ mod tests {
         assert_eq!(cfg.multiplexes[0].frequency_hz, Some(26_000_000));
         assert_eq!(cfg.multiplexes[1].frequency_hz, Some(25_780_000));
         assert!(cfg.output.hackrf.is_some() && plan.describe(&cfg).contains("26.0000 MHz"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The File choice writes a group's composite: no radio, the stream's rate kept.
+    #[test]
+    fn a_group_writes_its_composite_to_a_file() {
+        let dir = example_dir_for_tests("group-file");
+        let text = include_str!("../../../crates/decdrm-station/examples/station-multiplexes.toml");
+        let ov = Overrides {
+            output: TxOutput::File,
+            file: Some(dir.join("group.wav")),
+            hackrf_gain_db: 20,
+            ..Default::default()
+        };
+        let (cfg, plan) = check(text, &dir, &ov).unwrap();
+        assert!(matches!(plan, StationPlan::Group(_)));
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the stream's rate");
+        assert!(cfg.output.format == SignalFormat::Iq);
+        assert!(describe_output(&cfg, &plan).contains("group.wav"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
