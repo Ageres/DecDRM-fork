@@ -27,19 +27,36 @@ const MAX_PLAYLIST: u64 = 4 << 20;
 const MAX_SEGMENT: u64 = 64 << 20;
 const MAX_KEY: u64 = 4 << 10;
 
+/// AES keys kept for the segments that follow (a stream may rotate them).
+const MAX_KEYS: usize = 8;
+
 /// Whether `text` is an HLS playlist: it has `#EXT-X-` tags.
 pub(crate) fn is_hls(text: &str) -> bool {
     text.lines().any(|l| l.trim_start().to_ascii_uppercase().starts_with("#EXT-X-"))
 }
 
+/// Whether `text` is a master playlist: it lists variants.
+fn is_master(text: &str) -> bool {
+    text.lines().any(|l| l.trim_start().to_ascii_uppercase().starts_with("#EXT-X-STREAM-INF"))
+}
+
 /// A variant of a master playlist (`#EXT-X-STREAM-INF`) or an audio rendition
 /// (`#EXT-X-MEDIA:TYPE=AUDIO`).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone)]
 struct Variant {
     uri: String,
     bandwidth: u64,
-    /// An audio-only rendition (`#EXT-X-MEDIA`), or `CODECS` that name an audio codec.
-    audio: bool,
+    /// An audio rendition (`#EXT-X-MEDIA`), with its selection attributes.
+    rendition: Option<Rendition>,
+    /// It names a video codec or a resolution: its audio is muxed with video.
+    video: bool,
+}
+
+/// The selection attributes of an audio rendition.
+#[derive(Debug, Clone)]
+struct Rendition {
+    default: bool,
+    autoselect: bool,
 }
 
 /// A master playlist: the variants, in the order of the file.
@@ -101,22 +118,25 @@ pub(crate) struct HlsReader {
     ended: bool,
     /// AES keys by resolved URL.
     keys: Vec<(String, [u8; 16])>,
-    last_refresh: Instant,
-    segments: u64,
+    /// When the playlist last moved (a segment appeared or a session changed).
+    last_progress: Instant,
+    /// Consecutive failures of a segment fetch or a playlist refresh.
+    failures: usize,
 }
 
 impl HlsReader {
     /// Pick a variant of the master `text` (or take `text` as the media playlist),
     /// fetch the media playlist and position at the live edge.
-    pub(crate) fn new(text: &str, entry: Url, req: http::Request, shared: Arc<Shared>) -> Result<Self, String> {
+    pub(crate) fn new(text: &str, entry: Url, mut req: http::Request, shared: Arc<Shared>) -> Result<Self, String> {
+        // The segments are audio files: ICY metadata would be interleaved into them.
+        req.icy_metadata = false;
         let mut variant = entry.clone();
         let mut bitrate = None;
-        if text.lines().any(|l| l.trim_start().to_ascii_uppercase().starts_with("#EXT-X-STREAM-INF")) {
+        if is_master(text) {
             let master = parse_master(text)?;
             let chosen = choose(&master).ok_or("the master playlist lists no audio stream")?;
             variant = entry.join(&chosen.uri).map_err(|e| format!("variant {}: {e}", chosen.uri))?;
-            bitrate = (chosen.bandwidth > 0).then_some((chosen.bandwidth / 1000) as u32);
-            shared.log(format!("HLS: {variant} ({} kbit/s)", chosen.bandwidth / 1000));
+            bitrate = bitrate_of(&chosen);
         }
         let mut reader = HlsReader {
             shared,
@@ -131,12 +151,15 @@ impl HlsReader {
             pos: 0,
             ended: false,
             keys: Vec::new(),
-            last_refresh: Instant::now(),
-            segments: 0,
+            last_progress: Instant::now(),
+            failures: 0,
         };
-        let media = reader.fetch_media()?;
+        let (media, _) = reader.fetch_media()?;
         reader.next_seq = start_seq(&media);
+        let complete = media.ended;
         reader.media = media;
+        let kbit = reader.bitrate.map(|b| format!(" ({b} kbit/s)")).unwrap_or_default();
+        reader.shared.log(format!("HLS: {}{kbit}{}", reader.variant, if complete { ", complete" } else { "" }));
         Ok(reader)
     }
 
@@ -145,44 +168,69 @@ impl HlsReader {
         &self.variant
     }
 
-    /// The variant's declared bit rate, bit/s.
+    /// The variant's declared bit rate, kbit/s (only an audio-only variant has one).
     pub(crate) fn bitrate(&self) -> Option<u32> {
         self.bitrate
     }
 
+    /// Whether the playlist is complete (`#EXT-X-ENDLIST`): a file, not a live stream.
+    pub(crate) fn is_a_file(&self) -> bool {
+        self.media.ended
+    }
+
     /// Fetch the media playlist, re-resolving the variant through the entry URL when
-    /// the session has expired (the server answers 403/404).
-    fn fetch_media(&mut self) -> Result<Media, String> {
+    /// the session has expired (the server answers 403/404). True when the variant had
+    /// to be re-resolved: its media sequence then has nothing to do with the old one.
+    fn fetch_media(&mut self) -> Result<(Media, bool), String> {
         match self.get_text(&self.variant.clone()) {
             Ok((text, url)) => {
-                if text.lines().any(|l| l.trim_start().to_ascii_uppercase().starts_with("#EXT-X-STREAM-INF")) {
+                if is_master(&text) {
                     return Err("the media playlist is a master playlist".into());
                 }
                 let media = parse_media(&text)?;
                 self.media_url = url;
-                Ok(media)
+                Ok((media, false))
             }
             Err(e) => {
                 // A session (the `hlssid` in the URL) or the variant may have changed.
-                let (text, _) = self.get_text(&self.entry.clone())?;
-                let Some(variant) = variant_of(&text, &self.entry) else {
+                let (text, _) = self
+                    .get_text(&self.entry.clone())
+                    .map_err(|e2| format!("{e}; and the entry URL: {e2}"))?;
+                let Some((variant, bitrate)) = variant_url(&text, &self.entry) else {
                     return Err(format!("{e}; the entry URL no longer names an audio variant"));
                 };
-                self.shared.log(format!("HLS: the session changed, now {variant}"));
-                self.variant = variant.clone();
-                let (text, url) = self.get_text(&variant)?;
+                self.variant = variant;
+                self.bitrate = bitrate;
+                self.keys.clear();
+                {
+                    let mut inner = self.shared.lock();
+                    inner.status.stream_url = Some(self.variant.to_string());
+                    inner.status.bitrate = bitrate;
+                }
+                self.shared.log(format!("HLS: the session changed, now {}", self.variant));
+                let (text, url) = self.get_text(&self.variant.clone())?;
+                if is_master(&text) {
+                    return Err("the media playlist is a master playlist".into());
+                }
                 let media = parse_media(&text)?;
                 self.media_url = url;
-                Ok(media)
+                Ok((media, true))
             }
         }
     }
 
     /// Refetch the media playlist after waiting for it to advance.
     fn refresh(&mut self) -> Result<(), String> {
-        let media = self.fetch_media()?;
+        let before = window(&self.media);
+        let (media, changed) = self.fetch_media()?;
+        if changed {
+            // The new session numbers its segments anew: start at its live edge.
+            self.next_seq = start_seq(&media);
+        }
+        if changed || window(&media) != before {
+            self.last_progress = Instant::now();
+        }
         self.media = media;
-        self.last_refresh = Instant::now();
         Ok(())
     }
 
@@ -204,6 +252,16 @@ impl HlsReader {
         let mut req = self.req.clone();
         req.range = range;
         let resp = http::get(url, &req).map_err(|e| e.to_string())?;
+        if let Some((start, end)) = range
+            && resp.status != 206
+        {
+            // A 200 is only the segment when it is the first range of the whole file.
+            let asked = end.saturating_sub(start) + 1;
+            let answered = resp.header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
+            if start != 0 || answered != Some(asked) {
+                return Err(format!("{url}: the server ignored the byte range (HTTP {})", resp.status));
+            }
+        }
         let answered = resp.url.clone();
         let mut body = Vec::new();
         resp.body
@@ -231,6 +289,9 @@ impl HlsReader {
                     .try_into()
                     .map_err(|b: Vec<u8>| format!("{url}: the key is {} bytes, not 16", b.len()))?;
                 self.keys.push((id, b));
+                if self.keys.len() > MAX_KEYS {
+                    self.keys.remove(0);
+                }
                 b
             }
         };
@@ -273,23 +334,23 @@ impl HlsReader {
 
     /// Wait for the next segment to appear in the playlist (live), or finish (VOD).
     fn fill(&mut self) -> io::Result<()> {
-        let mut failures = 0;
         loop {
             if self.shared.stopped() {
-                return Err(stopped());
+                return Err(http::stop_error());
             }
             if let Some(seg) = self.media.segments.iter().find(|s| s.seq == self.next_seq).cloned() {
                 if seg.discontinuity {
                     self.shared.log(format!("HLS: a discontinuity before segment {}", seg.seq));
                 }
-                self.next_seq += 1;
                 if seg.gap {
                     self.shared.log(format!("HLS: segment {} is a gap ({:.1} s), skipped", seg.seq, seg.duration));
+                    self.next_seq += 1;
                     continue;
                 }
                 match self.load_segment(&seg) {
                     Ok(bytes) => {
-                        self.segments += 1;
+                        self.next_seq += 1;
+                        self.failures = 0;
                         if !bytes.is_empty() {
                             self.pending.extend_from_slice(&bytes);
                             return Ok(());
@@ -297,22 +358,34 @@ impl HlsReader {
                         continue;
                     }
                     Err(e) => {
-                        failures += 1;
-                        if failures >= 3 {
+                        self.failures += 1;
+                        self.shared.log(format!("HLS: {e}"));
+                        // The playlist may have moved past the segment (a normal race at
+                        // the live edge): then it is skipped, not retried.
+                        if let Err(e) = self.refresh() {
+                            self.shared.log(format!("HLS: {e}"));
+                        }
+                        if self.media.segments.first().is_none_or(|s| s.seq > seg.seq) {
+                            self.shared.log(format!("HLS: segment {} is gone, skipped", seg.seq));
+                            self.next_seq += 1;
+                            self.failures = 0;
+                            continue;
+                        }
+                        if self.failures >= 3 {
                             return Err(io::Error::other(e));
                         }
-                        self.shared.log(format!("HLS: {e}; retrying"));
                         self.sleep(Duration::from_millis(500))?;
                         continue;
                     }
                 }
             }
-            let first = self.media.segments.first().map(|s| s.seq);
-            let last = self.media.segments.last().map(|s| s.seq);
-            let (Some(first), Some(_)) = (first, last) else {
+            let (first, last) = (
+                self.media.segments.first().map(|s| s.seq),
+                self.media.segments.last().map(|s| s.seq),
+            );
+            let (Some(first), Some(last)) = (first, last) else {
                 // An empty playlist: wait for the broadcaster to add the first segment.
-                self.sleep(self.reload_wait())?;
-                self.refresh().map_err(io::Error::other)?;
+                self.wait_and_refresh()?;
                 continue;
             };
             if self.next_seq < first {
@@ -321,31 +394,79 @@ impl HlsReader {
                 self.next_seq = first;
                 continue;
             }
+            if self.next_seq > last + 1 {
+                // The media sequence went back: the broadcaster restarted the stream.
+                self.shared.log(format!(
+                    "HLS: the media sequence went back ({} is past {}), starting at the live edge",
+                    self.next_seq, last
+                ));
+                self.next_seq = start_seq(&self.media);
+                self.keys.clear();
+                continue;
+            }
+            // A hole in the window (no segment with this number): take the next one.
+            if let Some(next) = self.media.segments.iter().map(|s| s.seq).find(|&s| s >= self.next_seq) {
+                self.shared.log(format!("HLS: segment {} is missing, skipped to {next}", self.next_seq));
+                self.next_seq = next;
+                continue;
+            }
             if self.media.ended {
                 self.ended = true;
                 return Ok(());
             }
             // Live: wait a little, then look at the playlist again.
-            self.sleep(self.reload_wait())?;
-            self.refresh().map_err(io::Error::other)?;
+            self.wait_and_refresh()?;
         }
+    }
+
+    /// Wait for the playlist to advance and refetch it; errors are retried.
+    fn wait_and_refresh(&mut self) -> io::Result<()> {
+        let limit = self.stall_limit();
+        if self.last_progress.elapsed() > limit {
+            return Err(io::Error::other(format!(
+                "the playlist has not advanced for {:.0} s",
+                limit.as_secs_f64()
+            )));
+        }
+        self.sleep(self.reload_wait())?;
+        if let Err(e) = self.refresh() {
+            self.failures += 1;
+            self.shared.log(format!("HLS: {e}"));
+            if self.failures >= 3 {
+                return Err(io::Error::other(e));
+            }
+            self.sleep(Duration::from_millis(500))?;
+        }
+        Ok(())
+    }
+
+    /// The playlist's target duration, s (6 when it does not say).
+    fn target_s(&self) -> f64 {
+        if self.media.target_s > 0.0 { self.media.target_s } else { 6.0 }
+    }
+
+    /// How long a live playlist may stand still before the stream counts as stalled.
+    fn stall_limit(&self) -> Duration {
+        Duration::from_secs_f64((self.target_s() * 5.0).max(30.0))
     }
 
     /// How long to wait before asking for the playlist again (half the target, 0.2-3 s).
     fn reload_wait(&self) -> Duration {
-        let target = if self.media.target_s > 0.0 { self.media.target_s } else { 6.0 };
-        Duration::from_secs_f64((target / 2.0).clamp(0.2, 3.0))
+        Duration::from_secs_f64((self.target_s() / 2.0).clamp(0.2, 3.0))
     }
 
     fn sleep(&self, at_least: Duration) -> io::Result<()> {
         let until = Instant::now() + at_least;
-        while Instant::now() < until {
+        loop {
             if self.shared.stopped() {
-                return Err(stopped());
+                return Err(http::stop_error());
             }
-            std::thread::sleep((until - Instant::now()).min(Duration::from_millis(50)));
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            std::thread::sleep(left.min(Duration::from_millis(50)));
         }
-        Ok(())
     }
 }
 
@@ -369,11 +490,6 @@ impl Read for HlsReader {
     }
 }
 
-/// The stop error: an `Interrupted` I/O error the worker recognises as a stop request.
-fn stopped() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "stopped")
-}
-
 /// Whether the bytes are a fragmented MP4 segment (a box size, then an fMP4 box type).
 fn looks_like_fmp4(b: &[u8]) -> bool {
     b.len() >= 8
@@ -386,6 +502,11 @@ fn looks_like_ts(b: &[u8]) -> bool {
     b.len() >= 188 && b[0] == 0x47 && (b.len() < 377 || b[188] == 0x47)
 }
 
+/// What the playlist says about its window: it advances when this changes.
+fn window(media: &Media) -> (Option<u64>, Option<u64>, bool) {
+    (media.segments.first().map(|s| s.seq), media.segments.last().map(|s| s.seq), media.ended)
+}
+
 /// The media sequence number to start at: the live edge (a segment or two back), or
 /// the beginning of a complete playlist.
 fn start_seq(media: &Media) -> u64 {
@@ -396,21 +517,37 @@ fn start_seq(media: &Media) -> u64 {
     last.saturating_sub(START_BACK as u64)
 }
 
-/// The audio-capable variant to play: an audio rendition if there is one, else the
-/// variant with the highest bandwidth that names an audio codec (or names none).
+/// The variant to play: an audio rendition (the default one), else an audio-only
+/// variant with the best bit rate (its quality is what goes on the air), else the
+/// variant with video that costs the least (its video is thrown away).
 fn choose(master: &Master) -> Option<Variant> {
-    let audio: Vec<&Variant> = master.variants.iter().filter(|v| v.audio).collect();
-    if let Some(v) = audio.iter().max_by_key(|v| v.bandwidth) {
+    let renditions: Vec<&Variant> = master.variants.iter().filter(|v| v.rendition.is_some()).collect();
+    let pick = renditions
+        .iter()
+        .find(|v| v.rendition.as_ref().is_some_and(|r| r.default))
+        .or_else(|| renditions.iter().find(|v| v.rendition.as_ref().is_some_and(|r| r.autoselect)))
+        .or_else(|| renditions.first());
+    if let Some(v) = pick {
         return Some((*v).clone());
     }
-    master.variants.iter().max_by_key(|v| v.bandwidth).cloned()
+    if let Some(v) = master.variants.iter().filter(|v| !v.video).max_by_key(|v| v.bandwidth) {
+        return Some(v.clone());
+    }
+    master.variants.iter().min_by_key(|v| v.bandwidth).cloned()
 }
 
-/// The variant URL of a master `text` (after a session change), if it has one.
-fn variant_of(text: &str, entry: &Url) -> Option<Url> {
+/// The bit rate to show for `v`, kbit/s: only an audio-only stream variant declares a
+/// meaningful one (a rendition has no BANDWIDTH, a muxed variant's is mostly video).
+fn bitrate_of(v: &Variant) -> Option<u32> {
+    (v.rendition.is_none() && !v.video && v.bandwidth > 0).then_some((v.bandwidth / 1000) as u32)
+}
+
+/// The variant URL of a master `text` and its bit rate (after a session change).
+fn variant_url(text: &str, entry: &Url) -> Option<(Url, Option<u32>)> {
     let master = parse_master(text).ok()?;
     let chosen = choose(&master)?;
-    entry.join(&chosen.uri).ok()
+    let url = entry.join(&chosen.uri).ok()?;
+    Some((url, bitrate_of(&chosen)))
 }
 
 /// Parse a master playlist.
@@ -420,22 +557,28 @@ fn parse_master(text: &str) -> Result<Master, String> {
     for line in text.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
             let attrs = attrs(rest);
+            let codecs = value(&attrs, "CODECS").unwrap_or_default().to_ascii_lowercase();
+            let video = ["avc1", "avc3", "hvc1", "hev1", "dvh1", "dvhe", "av01", "vp09", "vp8"]
+                .iter()
+                .any(|c| codecs.contains(c))
+                || value(&attrs, "RESOLUTION").is_some();
             pending = Some(Variant {
                 uri: String::new(),
                 bandwidth: number(&attrs, "BANDWIDTH").unwrap_or(0),
-                audio: match value(&attrs, "CODECS") {
-                    Some(codecs) => {
-                        let codecs = codecs.to_ascii_lowercase();
-                        codecs.contains("mp4a") || codecs.contains("mp3")
-                    }
-                    None => true,
-                },
+                rendition: None,
+                video,
             });
         } else if let Some(rest) = line.strip_prefix("#EXT-X-MEDIA:") {
             let attrs = attrs(rest);
             let is_audio = value(&attrs, "TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO"));
             if is_audio && let Some(uri) = value(&attrs, "URI") {
-                master.variants.push(Variant { uri, bandwidth: 0, audio: true });
+                let yes = |name: &str| value(&attrs, name).is_some_and(|v| v.eq_ignore_ascii_case("YES"));
+                master.variants.push(Variant {
+                    uri,
+                    bandwidth: 0,
+                    rendition: Some(Rendition { default: yes("DEFAULT"), autoselect: yes("AUTOSELECT") }),
+                    video: false,
+                });
             }
         } else if line.is_empty() || line.starts_with('#') {
             continue;
@@ -526,12 +669,21 @@ fn parse_media(text: &str) -> Result<Media, String> {
 /// `IV=0x…` (32 hex digits) as 16 bytes.
 fn parse_iv(v: &str) -> Result<[u8; 16], String> {
     let hex = v.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if hex.len() != 32 {
+    let bytes = hex.as_bytes();
+    let nibble = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    };
+    // Bytes, not characters: a playlist from the network must not panic the worker.
+    if bytes.len() != 32 || !bytes.iter().all(|b| nibble(*b).is_some()) {
         return Err(format!("the IV \"{v}\" is not 32 hex digits"));
     }
     let mut iv = [0u8; 16];
     for (i, byte) in iv.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| format!("the IV \"{v}\" is not hex"))?;
+        let (hi, lo) = (nibble(bytes[2 * i]), nibble(bytes[2 * i + 1]));
+        *byte = (hi.expect("checked above") << 4) | lo.expect("checked above");
     }
     Ok(iv)
 }
@@ -628,14 +780,69 @@ l0_ddd.aac
 
     #[test]
     fn a_master_lists_variants_with_their_query() {
-        assert!(is_hls(MASTER));
+        assert!(is_hls(MASTER) && is_master(MASTER));
         let master = parse_master(MASTER).unwrap();
         assert_eq!(master.variants.len(), 1);
         assert_eq!(master.variants[0].uri, "playlist.m3u8?hlssid=abc");
-        assert!(master.variants[0].audio);
+        assert!(!master.variants[0].video && master.variants[0].rendition.is_none());
         let entry = Url::parse("https://example.com/rbc/112/playlist.m3u8").unwrap();
         let chosen = choose(&master).unwrap();
         assert_eq!(entry.join(&chosen.uri).unwrap().to_string(), "https://example.com/rbc/112/playlist.m3u8?hlssid=abc");
+        assert_eq!(bitrate_of(&chosen), Some(113));
+    }
+
+    #[test]
+    fn a_video_variant_is_not_taken_for_the_radio() {
+        // A video master: the audio-only variant wins, and a muxed one is the last
+        // resort (the cheapest: its video is thrown away).
+        let text = "\
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"avc1.4d401f,mp4a.40.2\"
+high.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"
+audio.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS=\"mp4a.40.2\"
+better.m3u8
+";
+        let master = parse_master(text).unwrap();
+        let chosen = choose(&master).unwrap();
+        assert_eq!(chosen.uri, "better.m3u8", "the best audio-only variant");
+        assert_eq!(bitrate_of(&chosen), Some(192));
+
+        let muxed = "\
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"avc1.4d401f,mp4a.40.2\"
+high.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS=\"avc1.42e01e,mp4a.40.2\"
+low.m3u8
+";
+        let chosen = choose(&parse_master(muxed).unwrap()).unwrap();
+        assert_eq!(chosen.uri, "low.m3u8", "the least video traffic");
+        assert_eq!(bitrate_of(&chosen), None, "a muxed bit rate is mostly video");
+    }
+
+    #[test]
+    fn a_default_audio_rendition_wins() {
+        let text = "\
+#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",DEFAULT=YES,URI=\"en.m3u8\"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"German\",AUTOSELECT=YES,URI=\"de.m3u8\"
+#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\",AUDIO=\"a\"
+stream.m3u8
+";
+        let master = parse_master(text).unwrap();
+        let chosen = choose(&master).unwrap();
+        assert_eq!(chosen.uri, "en.m3u8");
+        assert!(chosen.rendition.as_ref().is_some_and(|r| r.default));
+        assert_eq!(bitrate_of(&chosen), None, "a rendition declares no bit rate");
+    }
+
+    #[test]
+    fn a_broken_iv_is_an_error_not_a_panic() {
+        let text = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",IV=0x\u{20ac}000102030405060708090A0B0C0D0E\n#EXTINF:6,\na.aac\n";
+        let e = parse_media(text).unwrap_err();
+        assert!(e.contains("not 32 hex digits"), "{e}");
+        assert_eq!(parse_iv("0x000102030405060708090A0B0C0D0E0F").unwrap()[..4], [0, 1, 2, 3]);
     }
 
     #[test]

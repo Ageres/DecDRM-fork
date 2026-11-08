@@ -281,6 +281,75 @@ fn hls_live_segments() {
     assert!(server.hits("/hls/media.m3u8?hls=1") >= 2, "the playlist is polled for more");
 }
 
+/// HLS: the session URL expires (403), the master names a new one whose media sequence
+/// is lower than the old: the reader follows it instead of waiting for the old numbers.
+#[test]
+fn hls_session_change() {
+    let audio = adts(AacProfile::Lc, 48_000, 1, 64_000, &tone(48_000, 1, 1000.0, 0.3, 1.0));
+    // The master rotates the session on its second answer.
+    let master = std::sync::Arc::new(|req: &server::Req, out: &mut dyn std::io::Write| {
+        let session = if req.index == 0 { "old" } else { "new" };
+        let text = format!(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"\nmedia.m3u8?hlssid={session}\n"
+        );
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        )
+    });
+    // The old session: one segment (numbered 50), then 403.
+    let old = std::sync::Arc::new(|req: &server::Req, out: &mut dyn std::io::Write| {
+        if req.index > 0 {
+            return out.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+        }
+        let text = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:50\n#EXTINF:1.0,\nseg.aac\n";
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        )
+    });
+    // The new session numbers its segments from 3: far behind what the old one reached.
+    let new = std::sync::Arc::new(|_req: &server::Req, out: &mut dyn std::io::Write| {
+        let text = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:3\n\
+                    #EXTINF:1.0,\nseg.aac\n#EXTINF:1.0,\nseg.aac\n#EXTINF:1.0,\nseg.aac\n#EXTINF:1.0,\nseg.aac\n";
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        )
+    });
+    let server = Server::start(vec![
+        ("/hls/master.m3u8", master),
+        ("/hls/media.m3u8?hlssid=old", old),
+        ("/hls/media.m3u8?hlssid=new", new),
+        ("/hls/seg.aac", body("200 OK", "audio/aac", audio)),
+    ]);
+    let mut src = WebStreamSource::open(options(&server.url("/hls/master.m3u8"), 48_000, 1)).unwrap();
+    let out = read(&mut src, 6);
+    let log = src.take_log();
+    assert!(logged(&log, "the session changed"), "{log:?}");
+    assert_eq!(src.status().stream_url, Some(server.url("/hls/media.m3u8?hlssid=new")));
+    assert!(server.hits("/hls/media.m3u8?hlssid=old") >= 2, "the old session was asked again");
+    let (f, _, _) = dominant_tone(&out, 1, 0, 48_000, 900.0, 1100.0);
+    assert!((f - 1000.0).abs() < 25.0, "audio after the session change: {f} Hz");
+}
+
+/// HLS: a server that ignores `Range:` must be reported, not played from byte zero.
+#[test]
+fn hls_ignored_byte_range_is_an_error() {
+    let audio = adts(AacProfile::Lc, 48_000, 1, 64_000, &tone(48_000, 1, 1000.0, 0.3, 1.0));
+    let media = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n\
+                 #EXT-X-BYTERANGE:100@0\n#EXTINF:1.0,\nseg.aac\n";
+    let server = Server::start(vec![
+        ("/hls/media.m3u8", body("200 OK", "application/vnd.apple.mpegurl", media)),
+        ("/hls/seg.aac", body("200 OK", "audio/aac", audio)),
+    ]);
+    let err = WebStreamSource::open(options(&server.url("/hls/media.m3u8"), 48_000, 1)).err().unwrap();
+    assert!(err.contains("ignored the byte range"), "{err}");
+}
+
 /// Chunked transfer coding (HTTP/1.1 servers and proxies).
 #[test]
 fn chunked_stream() {

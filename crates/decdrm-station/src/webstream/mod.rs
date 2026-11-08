@@ -687,7 +687,7 @@ impl Worker {
             self.shared.log(format!("{message}; reconnecting in {:.1} s", wait.as_secs_f64()));
             let until = Instant::now() + wait;
             while Instant::now() < until && !self.shared.stopped() {
-                std::thread::sleep((until - Instant::now()).min(Duration::from_millis(50)));
+                std::thread::sleep(until.saturating_duration_since(Instant::now()).min(Duration::from_millis(50)));
             }
         }
         self.shared.lock().done = true;
@@ -745,15 +745,20 @@ impl Worker {
                         };
                         let variant = reader.variant_url().to_string();
                         let bitrate = reader.bitrate();
+                        let complete = reader.is_a_file();
                         {
                             let mut inner = self.shared.lock();
-                            inner.on_demand = false;
+                            // A complete playlist is a file: the station paces it and
+                            // does not trim it like a live stream.
+                            inner.on_demand = complete;
                             let s = &mut inner.status;
                             s.stream_url = Some(variant.clone());
                             s.bitrate = bitrate;
                             s.state = WebStreamState::Buffering;
                         }
-                        self.shared.log(format!("HLS: {variant}"));
+                        if complete {
+                            self.shared.log(format!("HLS: {variant} is complete: it plays once"));
+                        }
                         let mut input = icy::StreamInput::new(reader, None);
                         let class = match sniff_head(&mut input) {
                             Ok(head) => decode::classify(None, "", head),

@@ -229,6 +229,8 @@ pub(crate) struct Request {
 
 /// A response whose status was 2xx, with its body still to be read.
 pub(crate) struct Response {
+    /// The status code (200, 206 for a byte range, ...).
+    pub status: u16,
     /// The URL that answered (after redirects).
     pub url: Url,
     /// Header names in lower case, values as sent (UTF-8, or Latin-1 when not UTF-8).
@@ -252,7 +254,7 @@ pub(crate) fn get(url: &Url, req: &Request) -> Result<Response, HttpError> {
         match status {
             200..=299 => {
                 let body = Body::new(reader, &headers);
-                return Ok(Response { url, headers, body });
+                return Ok(Response { status, url, headers, body });
             }
             301 | 302 | 303 | 307 | 308 => {
                 let location = header("location").ok_or_else(|| {
@@ -339,6 +341,12 @@ impl std::error::Error for StopRequested {}
 /// Whether `e` is the error a read returns after a stop request.
 pub(crate) fn is_stopped(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<StopRequested>())
+}
+
+/// The error reads should return after a stop request: [`is_stopped`] recognises it,
+/// and std's `read_to_end` and friends do not retry it (an `Interrupted` one they do).
+pub(crate) fn stop_error() -> io::Error {
+    io::Error::other(StopRequested)
 }
 
 fn read_line(reader: &mut BufReader<Conn>, total: &mut usize) -> io::Result<String> {
