@@ -9,8 +9,9 @@
 //! sniffs it like any other stream. The fragments are joined into one continuous
 //! stream: the ID3v2 tag some servers put at the start of a segment is dropped.
 //!
-//! fMP4 segments (`#EXT-X-MAP`), `SAMPLE-AES` and low-latency HLS are recognised and
-//! refused with a message (see [`HlsReader::new`] and [`parse_media`]).
+//! fMP4 segments (`#EXT-X-MAP`) and `SAMPLE-AES` are recognised and refused with a
+//! message (see [`HlsReader::new`] and [`parse_media`]); low-latency HLS is not
+//! recognised - its `EXTINF` segments play, at the usual latency.
 
 use super::http::{self, Url};
 use super::ts;
@@ -358,6 +359,9 @@ impl HlsReader {
                         continue;
                     }
                     Err(e) => {
+                        if self.shared.stopped() {
+                            return Err(http::stop_error());
+                        }
                         self.failures += 1;
                         self.shared.log(format!("HLS: {e}"));
                         // The playlist may have moved past the segment (a normal race at
@@ -429,13 +433,21 @@ impl HlsReader {
             )));
         }
         self.sleep(self.reload_wait())?;
-        if let Err(e) = self.refresh() {
-            self.failures += 1;
-            self.shared.log(format!("HLS: {e}"));
-            if self.failures >= 3 {
-                return Err(io::Error::other(e));
+        match self.refresh() {
+            // Transient failures are counted only while they last: a stream that
+            // delivers between them must not fail after three of them over a day.
+            Ok(()) => self.failures = 0,
+            Err(e) => {
+                if self.shared.stopped() {
+                    return Err(http::stop_error());
+                }
+                self.failures += 1;
+                self.shared.log(format!("HLS: {e}"));
+                if self.failures >= 3 {
+                    return Err(io::Error::other(e));
+                }
+                self.sleep(Duration::from_millis(500))?;
             }
-            self.sleep(Duration::from_millis(500))?;
         }
         Ok(())
     }
