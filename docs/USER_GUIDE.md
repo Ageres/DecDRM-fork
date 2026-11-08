@@ -867,8 +867,12 @@ url = "https://radio.example/live.mp3"
 
 - **Streams:** Icecast and SHOUTCAST over HTTP or HTTPS (checked against the system's
   trusted certificates), following redirects. A playlist (`.m3u`, `.m3u8`, `.pls`)
-  stands for its first stream. HLS (segmented `.m3u8`), DASH, MP4 and WMA streams are
-  not supported.
+  stands for its first stream. An HLS playlist (`.m3u8` with `#EXT-X-` tags, which
+  radio stations increasingly serve; a master playlist and its media playlist are
+  followed) is played segment by segment from the live edge: AAC in ADTS or in
+  MPEG-TS, MP3, and AES-128 encrypted segments. HLS with fragmented-MP4 segments
+  (`#EXT-X-MAP`), `SAMPLE-AES` encryption or low-latency parts, DASH, MP4 and WMA
+  streams are not supported (the station reports it).
 - **Codecs:** MP3 (and MP2), AAC, HE-AAC and HE-AAC v2 in ADTS, Ogg Vorbis, Ogg Opus
   (mono or stereo), FLAC (native or in Ogg). The format is recognised from the data,
   from the server's `Content-Type` only when the data does not tell. The audio is mixed
@@ -877,7 +881,8 @@ url = "https://radio.example/live.mp3"
   ICY `StreamTitle`, or an Ogg stream's comments — goes out as a text message, first in
   the cycle, followed by the `text` messages. A new title replaces the old one at once
   (receivers see a new message), and it changes when its audio goes out, not when it
-  arrives.
+  arrives. An HLS stream carries no title for the station (its `#EXT-X-DATERANGE`
+  artist/title metadata is not read): only the `text` messages go out.
 - **Timing:** the stream runs on the broadcaster's clock.
   - With a sound-card output the station keeps 1.5 s of the stream in hand and follows
     its clock like a sound-card input (*clock trim* in the CLI's status lines). It

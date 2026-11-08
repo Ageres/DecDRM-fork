@@ -742,7 +742,8 @@ symbol lengths are 1152/1024/704/448 samples for modes A/B/C/D.
       *Done:* `decdrm_station::webstream`. HTTP/1.1 client of our own (SHOUTCAST's
       `ICY 200 OK`, chunked coding, redirects, reads that poll a stop flag and give up
       after a stall; rustls with the ring provider and the system's roots); M3U/M3U8/PLS
-      resolve to their first entry (relative entries, dot segments), HLS refused. ICY
+      resolve to their first entry (relative entries, dot segments); HLS has its own
+      module since 2026-11-08 (below). ICY
       metadata stripped, `StreamTitle` parsed (apostrophes, Latin-1). Format by sniffing
       (two agreeing frame headers), then `Content-Type`: MP3/MP2 (own framer, symphonia
       decoder), AAC/HE-AAC/HE-AAC v2 in ADTS (`decdrm_codecs::FdkAdtsDecoder`; PS known
@@ -770,6 +771,29 @@ symbol lengths are 1152/1024/704/448 samples for modes A/B/C/D.
       loopback through the receiver; live through the virtual cable: 80 s, 0 underruns,
       titles received. Not verified: real Icecast/SHOUTCAST servers and real encoders'
       streams (no internet in development).
+- [x] **HLS input** (2026-11-08) - the web stream input plays HTTP Live Streaming
+      playlists (segmented `.m3u8` with `#EXT-X-` tags), so stations that no longer
+      offer a continuous Icecast stream work. *Done:* `webstream::hls` (RFC 8216): the
+      master playlist (`#EXT-X-STREAM-INF`, `#EXT-X-MEDIA` audio renditions; the
+      highest-bandwidth audio variant is taken) and the media playlist (`#EXTINF`,
+      `#EXT-X-TARGETDURATION`, `#EXT-X-MEDIA-SEQUENCE`, `#EXT-X-DISCONTINUITY`,
+      `#EXT-X-GAP`, `#EXT-X-ENDLIST`, `#EXT-X-BYTERANGE`, `#EXT-X-KEY`; the
+      `PROGRAM-DATE-TIME`, `DATERANGE` and `START` tags are ignored); `#EXT-X-MAP`
+      (fMP4), `SAMPLE-AES` and low-latency parts are refused by name. A `Read` joins
+      segments from the live edge (a segment back), polls the playlist every target/2 s,
+      skips whole segments it missed with a log line, and re-resolves the variant through
+      the entry URL when a session URL expires (403/404). AES-128-CBC segments are
+      decrypted (`aes`, PKCS#7, the IV from `IV=` or the media sequence), and the ID3v2
+      tag some servers put before a segment's audio is dropped. `webstream::ts`
+      demultiplexes MPEG-TS segments (PAT/PMT/PES, ADTS AAC and MPEG audio; LATM and
+      AC-3 refused) - the rest pass through to the existing sniffer.
+      `http::Request.range` adds `Range:` for byte-range segments; `icy::StreamInput`
+      takes any `Box<dyn Read>`. Tests: the parsers, the TS demuxer
+      on synthetic packets, the AES-CBC NIST vector, and end to end through the local
+      test server (a master, a media playlist whose window moves with each request,
+      ADTS segments joined into one tone). Live: Radio Business Class (RBC) masters,
+      AAC-LC 44.1 kHz stereo 113 kbit/s, decoded for 4 s; not verified: other
+      broadcasters, encrypted segments in the wild, fMP4, the load on the Pi.
 
 ## Conventions
 
