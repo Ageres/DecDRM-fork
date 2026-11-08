@@ -162,7 +162,7 @@ impl GroupStation {
             frames: 0,
             status: StationStatus::default(),
         };
-        s.update_status();
+        s.update_status(false);
         Ok(s)
     }
 
@@ -174,11 +174,11 @@ impl GroupStation {
         for station in &mut self.stations {
             frames.push(station.transmit_frame()?);
         }
-        self.combiner.push_frame(&frames);
+        self.combiner.push_frame(&frames)?;
         self.combiner.finish_frame(&mut self.samples);
         self.sink.write(&self.samples, &self.stop)?;
         self.frames += 1;
-        self.update_status();
+        self.update_status(true);
         Ok(&self.samples)
     }
 
@@ -198,7 +198,8 @@ impl GroupStation {
             self.sink.write(&self.samples, &self.stop)?;
         }
         self.sink.finish(&self.stop)?;
-        self.update_status();
+        // The flush's tail is not a frame: the last frame's levels stay.
+        self.update_status(false);
         Ok(self.status)
     }
 
@@ -248,7 +249,9 @@ impl GroupStation {
         !self.stations.is_empty() && self.stations.iter().all(Station::inputs_finished)
     }
 
-    fn update_status(&mut self) {
+    /// Refresh the status; `frame_levels` is false after the flush (its tail is not a
+    /// frame, so the last frame's levels stay).
+    fn update_status(&mut self, frame_levels: bool) {
         let mut st = self.stations.first().map_or_else(StationStatus::default, |s| s.status().clone());
         st.frames = self.frames;
         st.seconds = self.frames as f64 * FRAME_SECONDS;
@@ -283,7 +286,7 @@ impl GroupStation {
                 }
             })
             .collect();
-        if !self.samples.is_empty() {
+        if frame_levels && !self.samples.is_empty() {
             let n = self.samples.len();
             let (sum, peak) = self
                 .samples

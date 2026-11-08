@@ -77,7 +77,9 @@ interleaving, protection) and its own `[[multiplex.service]]`. IDs are per multi
 they travel in that multiplex's FAC/MSC and mean nothing to its neighbours. A multiplex
 can be switched off with `enabled = false` (the default is `true`): it stays in the
 file with its services but out of the plan - no station, no feeds, no room in the span,
-the levels or the load - and the plan prints it as `(off)`.
+the levels or the load - and the plan prints it as `(off)`. A disabled multiplex is not
+checked beyond its unknown keys: a broken channel, codec or feed names itself when it
+is enabled again.
 
 A group can also write its composite to a file instead of the radio: then the stream's
 settings live in `[output]` (no `[output.hackrf]`) and `[output.file]` names the WAV or

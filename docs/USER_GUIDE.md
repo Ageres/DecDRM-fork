@@ -824,7 +824,8 @@ is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limi
 A `[[multiplex]]` can be switched off without deleting it: `enabled = false` keeps its
 settings and services in the file but out of the stream - no feed is opened, no encoder
 runs, and it takes no room in the span, the levels or the load. `--check` prints it as
-`(off)`, and the other multiplexes keep their numbers.
+`(off)`, and the other multiplexes keep their numbers. Its own settings are not checked
+while it is off (a broken codec or feed names itself when it is enabled again).
 
 Each multiplex's 48 kHz baseband is combined with the others: one shared resampler
 brings a group of up to about 180 kHz of carrier separation (the intermediate rate is

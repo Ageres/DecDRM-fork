@@ -61,6 +61,9 @@ pub enum StationError {
     /// The modulator's MDI input failed.
     #[error("MDI: {0}")]
     Mdi(String),
+    /// An internal worker (a multiplex's resampler thread) panicked: a bug.
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
 impl StationError {

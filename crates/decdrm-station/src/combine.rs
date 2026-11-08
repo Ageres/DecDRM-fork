@@ -96,15 +96,22 @@ impl Combiner {
     /// order of the multiplexes. With a stage per multiplex the stages are resamplers
     /// from 48 kHz to the radio's rate, the widest-spread case's whole cost: they run
     /// on their own threads, one per multiplex, spawned per frame.
-    pub fn push_frame(&mut self, frames: &[&[f32]]) {
+    pub fn push_frame(&mut self, frames: &[&[f32]]) -> Result<()> {
         assert_eq!(frames.len(), self.stages.len(), "a frame per multiplex");
         if self.shared.is_none() && self.stages.len() > 1 {
             let Self { stages, outs, .. } = self;
-            std::thread::scope(|scope| {
-                for ((stage, out), &frame) in stages.iter_mut().zip(outs.iter_mut()).zip(frames) {
-                    scope.spawn(move || resample_into(stage, frame, out));
-                }
-            });
+            // A panicking resampler would unwind through the scope and take the station
+            // with it; a station that reports it can still finish its output.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                std::thread::scope(|scope| {
+                    for ((stage, out), &frame) in stages.iter_mut().zip(outs.iter_mut()).zip(frames) {
+                        scope.spawn(move || resample_into(stage, frame, out));
+                    }
+                });
+            }));
+            if outcome.is_err() {
+                return Err(StationError::Internal("a resampler panicked".into()));
+            }
             for i in 0..self.stages.len() {
                 self.mix_into(i);
             }
@@ -113,6 +120,7 @@ impl Combiner {
                 self.push(i, frame);
             }
         }
+        Ok(())
     }
 
     /// Add multiplex `index`'s 48 kHz interleaved I/Q frame to the composite.
@@ -236,15 +244,21 @@ codec = "he-aac"
 input = { tone_hz = 880.0 }
 "#;
 
-    /// Combine `text`'s multiplexes (a DC frame each) and return the plan and the
-    /// radio-rate output. The frames go through [`Combiner::push_frame`], as a station
-    /// sends them.
-    fn combine(text: &str, frame_samples: usize, frames: usize) -> (crate::plan::GroupPlan, Vec<f32>) {
+    /// The group's plan and a combiner for it.
+    fn make(text: &str) -> (crate::plan::GroupPlan, Combiner) {
         let cfg = StationConfig::from_toml_str(text).unwrap();
         let crate::plan::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
             panic!("expected a group")
         };
-        let mut combiner = Combiner::new(&group, crate::config::ResamplerSetting::Fast).unwrap();
+        let combiner = Combiner::new(&group, crate::config::ResamplerSetting::Fast).unwrap();
+        (group, combiner)
+    }
+
+    /// Combine `text`'s multiplexes (a DC frame each) and return the plan and the
+    /// radio-rate output. The frames go through [`Combiner::push_frame`], as a station
+    /// sends them.
+    fn combine(text: &str, frame_samples: usize, frames: usize) -> (crate::plan::GroupPlan, Vec<f32>) {
+        let (group, mut combiner) = make(text);
         let mut out = Vec::new();
         let mut buffers = Vec::new();
         for _ in 0..frames {
@@ -258,7 +272,7 @@ input = { tone_hz = 880.0 }
             }
             let refs: Vec<&[f32]> = buffers.iter().map(|f| f.as_slice()).collect();
             combiner.begin_frame();
-            combiner.push_frame(&refs);
+            combiner.push_frame(&refs).unwrap();
             combiner.finish_frame(&mut out);
         }
         (group, out)
@@ -310,6 +324,33 @@ input = { tone_hz = 880.0 }
         let (group, out) = combine(&TWO.replace("25_780_000", "25_950_000"), 19_200, 2);
         assert!(group.intermediate_hz.is_none(), "a stage per multiplex");
         assert_on_their_offsets(&group, &out);
+    }
+
+    /// The tail of the last frames comes out of [`Combiner::flush`]: the stage and the
+    /// shared resamplers hold a filter's worth of samples back.
+    #[test]
+    fn the_tail_comes_out_of_the_flush() {
+        for (label, text) in [
+            ("narrow", TWO.to_string()),
+            ("wide", TWO.replace("25_780_000", "25_950_000")),
+        ] {
+            let (group, mut combiner) = make(&text);
+            let mut frame = vec![0.0f32; 19_200 * 2];
+            for z in frame.as_chunks_mut::<2>().0 {
+                z[0] = 1.0;
+            }
+            let refs: Vec<&[f32]> = (0..group.multiplexes.len()).map(|_| frame.as_slice()).collect();
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                combiner.begin_frame();
+                combiner.push_frame(&refs).unwrap();
+                combiner.finish_frame(&mut out);
+            }
+            let mut tail = Vec::new();
+            combiner.flush(&mut tail);
+            assert!(!tail.is_empty(), "{label}: the tail is lost");
+            assert!(tail.len() < 80_000, "{label}: {} samples, a tail, not a frame", tail.len());
+        }
     }
 
     /// The mixer's phase carries on from frame to frame: 19 201 samples are 0.2 of a
