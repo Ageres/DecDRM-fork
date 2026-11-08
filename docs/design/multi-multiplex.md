@@ -172,11 +172,12 @@ It must check, per multiplex and for the group:
 
 ## Status
 
-- The CLI banner lists the multiplexes (frequency, mode, occupancy, services).
-- The status line carries the transmitted seconds once for the stream; underruns and
-  `recoveries` are per stream.
-- The GUI's Output card can list the multiplexes read-only; the transmit page's quick
-  fields keep working for the single-multiplex form.
+- The CLI banner lists the multiplexes (frequency, mode, occupancy, services), a
+  disabled one as `(off)`, and the split level when `split_level` is on.
+- The status line carries the stream's seconds once; underruns, `recoveries` and the
+  output levels are the stream's, the frames and SDC use per multiplex.
+- The GUI's Services card lists every multiplex and its services; the quick frequency
+  field edits the first enabled multiplex (a group has no single-band spectrum plot).
 
 ## Tests
 

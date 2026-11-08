@@ -34,8 +34,8 @@ pub struct TxArgs {
     snr: Option<f64>,
 }
 
-/// Apply `--output`: write to `out` instead of the configured outputs. A group records
-/// its composite instead of the radio, at the radio's rate when its section is there.
+/// Apply `--output`: write to `out` instead of every configured output. A group keeps
+/// the stream's rate and resampler quality from its `[output.hackrf]` section.
 fn apply_output(cfg: &mut StationConfig, out: &Path) -> Result<()> {
     // Relative to the current directory, not to the configuration file.
     cfg.output.file = Some(std::path::absolute(out).with_context(|| format!("output path {}", out.display()))?);
@@ -44,8 +44,11 @@ fn apply_output(cfg: &mut StationConfig, out: &Path) -> Result<()> {
         if cfg.output.sample_rate_hz.is_none() {
             cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
         }
-        cfg.output.hackrf = None;
+        if cfg.output.resampler.is_none() {
+            cfg.output.resampler = cfg.output.hackrf.as_ref().map(|h| h.resampler);
+        }
     }
+    cfg.output.hackrf = None;
     Ok(())
 }
 
@@ -350,7 +353,40 @@ input = { tone_hz = 880.0 }
         assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
         assert!(cfg.output.device.is_none());
         assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the radio's rate");
+        assert_eq!(
+            cfg.output.resampler,
+            Some(decdrm_station::ResamplerSetting::Fast),
+            "the radio's resampler quality"
+        );
         assert!(cfg.output.file.as_deref().unwrap().to_string_lossy().ends_with("group.wav"));
+        assert!(cfg.validate_station().is_ok());
+    }
+
+    const SINGLE: &str = r#"
+[output]
+format = "iq"
+[output.hackrf]
+frequency_hz = 25_760_000
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+[channel]
+mode = "B"
+occupancy = 3
+[[service]]
+label = "A"
+id = 0x42
+[service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+"#;
+
+    /// `--output` replaces every configured output: a single multiplex's radio too.
+    #[test]
+    fn a_single_output_replaces_the_radio() {
+        let mut cfg = StationConfig::from_toml_str(SINGLE).unwrap();
+        apply_output(&mut cfg, Path::new("single.wav")).unwrap();
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert!(cfg.output.file.is_some());
         assert!(cfg.validate_station().is_ok());
     }
 }

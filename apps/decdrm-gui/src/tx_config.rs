@@ -111,19 +111,25 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             cfg.output.file = Some(file.clone());
             cfg.output.device = None;
             // A group writes its composite (I/Q at the stream's rate) instead of the
-            // radio; the rate comes from the file's [output.hackrf] if it has one.
+            // radio; its rate and resampler quality come from [output.hackrf] below.
             if !cfg.multiplexes.is_empty() {
                 if cfg.output.sample_rate_hz.is_none() {
                     cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
                 }
-                cfg.output.hackrf = None;
+                if cfg.output.resampler.is_none() {
+                    cfg.output.resampler = cfg.output.hackrf.as_ref().map(|h| h.resampler);
+                }
                 cfg.output.format = SignalFormat::Iq;
                 cfg.output.iq_offset_hz = 0.0;
             }
+            // The choice means that output only: the radio would transmit at the same
+            // time ("As configured" keeps whatever the file names).
+            cfg.output.hackrf = None;
         }
         TxOutput::Device => {
             cfg.output.device = Some(ov.device.clone().unwrap_or_else(|| "default".into()));
             cfg.output.file = None;
+            cfg.output.hackrf = None;
         }
         TxOutput::Hackrf => {
             // Only the radio, as with the File and Device choices: the station file
@@ -415,6 +421,11 @@ mod tests {
         assert!(matches!(plan, StationPlan::Group(_)));
         assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
         assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the stream's rate");
+        assert_eq!(
+            cfg.output.resampler,
+            Some(ResamplerSetting::Fast),
+            "the radio's resampler quality"
+        );
         assert!(cfg.output.format == SignalFormat::Iq);
         assert!(describe_output(&cfg, &plan).contains("group.wav"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -429,12 +440,15 @@ mod tests {
             device: None,
             ..Default::default()
         };
-        let cfg = prepare(EXAMPLE_STATION, &dir, &file).unwrap();
+        // A radio in the file is dropped by the File and Device choices too.
+        let with_radio = format!("{EXAMPLE_STATION}\n[output.hackrf]\nsample_rate_hz = 2_000_000\n");
+        let cfg = prepare(&with_radio, &dir, &file).unwrap();
         assert_eq!(
             cfg.output.file.as_deref(),
             Some(dir.join("x.wav").as_path())
         );
         assert!(cfg.output.device.is_none());
+        assert!(cfg.output.hackrf.is_none(), "the file only");
 
         let no_file = Overrides { file: None, ..file };
         assert!(prepare(EXAMPLE_STATION, &dir, &no_file).is_err());
@@ -445,9 +459,10 @@ mod tests {
             device: None,
             ..Default::default()
         };
-        let cfg = prepare(EXAMPLE_STATION, &dir, &device).unwrap();
+        let cfg = prepare(&with_radio, &dir, &device).unwrap();
         assert_eq!(cfg.output.device.as_deref(), Some("default"));
         assert!(cfg.output.file.is_none());
+        assert!(cfg.output.hackrf.is_none(), "the sound card only");
         assert!(
             start_check(&cfg, None, true).is_ok(),
             "a sound card needs no end"

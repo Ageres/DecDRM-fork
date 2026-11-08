@@ -1012,6 +1012,17 @@ input = { tone_hz = 440.0 }
     // -13 dBFS over the sum would clip the peaks.
     let p = problems_of(split.replace("level_dbfs = -14", "level_dbfs = -13"));
     assert!(has(&p, "set [output] level_dbfs"), "{p:?}");
+    // The sum itself stays inside -60..0 dBFS.
+    let p = problems_of(split.replace("level_dbfs = -14", "level_dbfs = -70"));
+    assert!(has(&p, "outside -60..0 dBFS (with split_level"), "{p:?}");
+    // The composite must fit the stream's sample rate: a file group has no analog
+    // filter to catch it.
+    let file_group = multiplex_text(25_760_000, 25_950_000, -18, "").replace(
+        "[output.hackrf]\nsample_rate_hz = 2_000_000\nif_offset_hz = -250_000\nresampler = \"fast\"\n",
+        "sample_rate_hz = 100_000\nfile = \"out.wav\"\n",
+    );
+    let p = problems_of(file_group);
+    assert!(has(&p, "the stream's sample rate is 100 kHz"), "{p:?}");
 
     // The levels add up in power, not per multiplex: three at -19 dBFS plus a very
     // quiet -40 is -14.2 dBFS over the sum, under the crest line even though

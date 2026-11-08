@@ -11,7 +11,7 @@
 //! `[output.hackrf]`, and its nominal frequency is the group's centre.
 
 use crate::combine::Combiner;
-use crate::config::StationConfig;
+use crate::config::{SampleFormat, StationConfig};
 use crate::error::{Result, StationError};
 #[cfg(feature = "hackrf")]
 use crate::hackrf::HackrfSink;
@@ -21,7 +21,13 @@ use crate::station::{Station, StationStatus, StopHandle};
 
 /// Where a group's one stream goes: the radio, or a composite file.
 enum GroupSink {
-    File(FileWriter),
+    /// A WAV/FLAC file. `clipped` counts the samples an integer encoding had to clamp
+    /// (a float file does not clamp).
+    File {
+        writer: FileWriter,
+        clip: bool,
+        clipped: u64,
+    },
     #[cfg(feature = "hackrf")]
     Hackrf(Box<HackrfSink>),
 }
@@ -29,10 +35,13 @@ enum GroupSink {
 impl GroupSink {
     fn write(&mut self, samples: &[f32], stop: &StopHandle) -> Result<()> {
         match self {
-            Self::File(f) => {
+            Self::File { writer, clip, clipped } => {
                 // A file has no queue to wait on.
                 let _ = stop;
-                f.write(samples).map_err(StationError::Output)
+                if *clip {
+                    *clipped += samples.iter().filter(|v| v.abs() > 1.0).count() as u64;
+                }
+                writer.write(samples).map_err(StationError::Output)
             }
             #[cfg(feature = "hackrf")]
             Self::Hackrf(h) => h.write(samples, stop),
@@ -42,19 +51,19 @@ impl GroupSink {
     /// Everything still queued: the radio's buffer, or the file's header.
     fn finish(&mut self, stop: &StopHandle) -> Result<()> {
         match self {
-            Self::File(f) => {
+            Self::File { writer, .. } => {
                 let _ = stop;
-                f.flush().map_err(StationError::Output)
+                writer.flush().map_err(StationError::Output)
             }
             #[cfg(feature = "hackrf")]
             Self::Hackrf(h) => h.drain(stop),
         }
     }
 
-    /// The samples the 8-bit conversion had to clip (a file keeps 16 bits or more).
+    /// The samples the 8-bit conversion (or the file's integer encoding) had to clip.
     fn clipped_samples(&self) -> u64 {
         match self {
-            Self::File(_) => 0,
+            Self::File { clipped, .. } => *clipped,
             #[cfg(feature = "hackrf")]
             Self::Hackrf(h) => h.clipped_samples(),
         }
@@ -105,9 +114,10 @@ impl GroupStation {
             }
             None => {
                 // A composite file: one I/Q stream at the group's rate around DC.
-                let file = crate::output::open_file_at(&cfg, group.sample_rate_hz, 2)?
+                let writer = crate::output::open_file_at(&cfg, group.sample_rate_hz, 2)?
                     .ok_or_else(|| StationError::config("a group needs [output.hackrf] or [output.file]"))?;
-                GroupSink::File(file)
+                let clip = cfg.output.sample_format != SampleFormat::Float32;
+                GroupSink::File { writer, clip, clipped: 0 }
             }
         };
         // The radio's own resampler setting is the composite's too, as before.
@@ -243,7 +253,7 @@ impl GroupStation {
         st.frames = self.frames;
         st.seconds = self.frames as f64 * FRAME_SECONDS;
         st.output_file = match &self.sink {
-            GroupSink::File(f) => Some(f.path().to_path_buf()),
+            GroupSink::File { writer, .. } => Some(writer.path().to_path_buf()),
             #[cfg(feature = "hackrf")]
             GroupSink::Hackrf(_) => None,
         };
@@ -273,13 +283,15 @@ impl GroupStation {
                 }
             })
             .collect();
-        let n = self.samples.len().max(1);
-        let (sum, peak) = self
-            .samples
-            .iter()
-            .fold((0.0f64, 0.0f32), |(s, p), &v| (s + f64::from(v * v), p.max(v.abs())));
-        st.output_rms_dbfs = 20.0 * ((sum / n as f64).sqrt() as f32).max(1e-10).log10();
-        st.output_peak_dbfs = 20.0 * peak.max(1e-10).log10();
+        if !self.samples.is_empty() {
+            let n = self.samples.len();
+            let (sum, peak) = self
+                .samples
+                .iter()
+                .fold((0.0f64, 0.0f32), |(s, p), &v| (s + f64::from(v * v), p.max(v.abs())));
+            st.output_rms_dbfs = 20.0 * ((sum / n as f64).sqrt() as f32).max(1e-10).log10();
+            st.output_peak_dbfs = 20.0 * peak.max(1e-10).log10();
+        }
         #[cfg(feature = "hackrf")]
         if let GroupSink::Hackrf(sink) = &self.sink {
             let s = sink.settings();

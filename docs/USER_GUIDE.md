@@ -842,8 +842,10 @@ file = "group.wav"
 sample_rate_hz = 2_000_000  # the composite's rate, not the radio's
 resampler = "fast"          # the composite's resamplers
 ```
-`decdrm tx station.toml --output other.wav` does the same to a radio configuration:
-it records the stream the radio would send, at the radio's rate.
+`decdrm tx station.toml --output other.wav` writes to that file instead of every
+configured output (the radio is not opened): a group records the composite at the
+radio's rate and with its resampler, a single multiplex its 48 kHz baseband. Use the
+file's own `[output] file` when the signal has to go to the radio and a file at once.
 
 The GUI transmits a group too: the quick frequency field edits the first multiplex, and the Services card lists them all. `scripts/pi/stationctl`
 keeps it running on a Pi. The load for one to four carriers is in the build guide.

@@ -960,6 +960,12 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
         }
     };
     let if_offset_hz = radio.map_or(0.0, |h| h.if_offset_hz);
+    if cfg.output.split_level && !(-60.0..=0.0).contains(&cfg.output.level_dbfs) {
+        p.push(format!(
+            "output: level_dbfs {} is outside -60..0 dBFS (with split_level it is the whole sum)",
+            cfg.output.level_dbfs
+        ));
+    }
     if !cfg.services.is_empty() {
         p.push("multiplexes: with [[multiplex]] the services belong inside the multiplexes ([[multiplex.service]])");
     }
@@ -1089,6 +1095,15 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
             (relative + low).abs().max((relative + high).abs())
         })
         .fold(0.0_f64, f64::max);
+    // The composite must fit the stream's sample rate (a file output has no analog
+    // filter to catch this; the radio's per-multiplex filter check is stricter).
+    if signal_span_hz > f64::from(sample_rate_hz) {
+        p.push(format!(
+            "multiplexes: the group spans {:.0} kHz of signal but the stream's sample rate is {:.0} kHz; raise [output] sample_rate_hz (or [output.hackrf] sample_rate_hz)",
+            signal_span_hz / 1e3,
+            f64::from(sample_rate_hz) / 1e3
+        ));
+    }
     let intermediate_hz = [48_000u32, 96_000, 192_000]
         .into_iter()
         .find(|fi| max_relative <= f64::from(*fi) / 2.0 - 1_000.0);

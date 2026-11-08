@@ -77,6 +77,8 @@ fn two_multiplexes_write_one_composite() {
     assert_eq!(offsets, vec![-10_000.0, 10_000.0]);
 
     let mut station = GroupStation::new(cfg, group).unwrap();
+    // Nothing sent yet: the initial status does not invent a level.
+    assert_eq!(station.status().output_rms_dbfs, 0.0);
     station.run_frames(3).unwrap();
     let status = station.finish().unwrap();
     assert_eq!(status.frames, 3);
