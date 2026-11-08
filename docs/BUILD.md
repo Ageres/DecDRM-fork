@@ -259,27 +259,30 @@ repository, the build, the kernel module and udev, the radio, the station.
    at 9/10 kHz, at most 1 MHz apart (see the user guide). The shared resampler's
    intermediate rate is 48, 96 or 192 kHz, which holds carrier separations up to about
    36, 84 and 180 kHz; a wider group resamples every multiplex on its own. With
-   `resampler = "fast"` (single multiplexes measured at about 60 % of one core; a
-   narrow group is built and combined on one thread):
+   `resampler = "fast"`, measured on a Pi 4B (1.4 GHz clock, no throttling, a file
+   output, 20 s per case; a 1.8 GHz Pi has more headroom):
 
-   | Carriers | span <= 36 kHz | <= 84 kHz | <= 180 kHz |
-   |---|---|---|---|
-   | 1 | about 60 % | about 63 % | about 65 % |
-   | 2 | about 68 % | about 70 % | about 76 % |
-   | 3 | about 74 % | about 78 % | about 86 % |
-   | 4 | about 80 % | about 86 % | about 96 % (the limit) |
+   | Case | Carriers | Separation | x real time | Work, % of one core |
+   |---|---|---|---|---|
+   | one shared resampler | 1 | n/a | 1.79 | 56 |
+   | one shared resampler | 2 | 20 kHz | 1.65 | 61 |
+   | one shared resampler | 3 | 140 kHz | 1.33 | 75 |
+   | one shared resampler | 4 | 180 kHz | 1.22 | 82 |
+   | a resampler each | 2 | 300 kHz | 1.47 | 115 (2 threads) |
+   | a resampler each | 4 | 900 kHz | 1.22 | 228 (4 threads) |
 
-   A span above about 180 kHz (up to 1 MHz) costs a resampler per multiplex, about
-   60 % of a core each; they run on their own threads (one per multiplex per frame),
-   so the cost spreads across the Pi's cores. The 180 kHz cases are the ones to
-   measure first: `vcgencmd get_throttled` must stay `0x0`, and
-   the station's status line must show no underruns. `--duration 20` with a station
-   file that has one, two and four `[[multiplex]]` tables measures it, as above.
-   `--output FILE` records the composite to a WAV/FLAC instead of the radio (the
-   stream's rate then comes from `[output.hackrf]` or `[output] sample_rate_hz`),
-   which also measures the load without a radio. A `step0`-style measurement of the
-   whole set (1-4 carriers, both strategies) is in the local `station/pi-step0`
-   folder (`measure-group.sh`): it prints a table for the design note.
+   A single-threaded case pins one core, so its real headroom is the real-time factor
+   (1 / x of the budget); the wide cases run a stage per multiplex on its own thread
+   (one per multiplex per frame) and spread over the cores. The file output skips the
+   HackRF sink, so on the air expect a little more. 18 and 20 kHz multiplexes need
+   `resampler = "balanced"` (about four times the resampler) and are not measured
+   here. `vcgencmd get_throttled` must stay `0x0`, and the station's status line must
+   show no underruns. `--duration 20` with a station file that has one, two and four
+   `[[multiplex]]` tables measures it, as above, and `--output FILE` records the
+   composite to a WAV/FLAC instead of the radio (the stream's rate then comes from
+   `[output.hackrf]` or `[output] sample_rate_hz`), which also measures the load
+   without a radio. The whole set (1-4 carriers, both strategies) is a `step0`-style
+   script in the local `station/pi-step0` folder (`measure-group.sh`).
 
 9. **systemd.** A unit for a station, with the udev rule's group and the log in
    the journal (running as root is unnecessary). Change the user and the paths to

@@ -1,11 +1,9 @@
 # Several multiplexes in one HackRF stream
 
-**Status: the configuration, the plan, the combiner, the per-multiplex status, the
-GUI, the thread per multiplex (wide spans) and the composite file are implemented; the
-Pi 4 measurement remains.** The design maximum is **4 multiplexes** (mode B,
-9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76 and
-25.78 MHz). A Raspberry Pi 4 is to be measured with 1, 2 and 4 carriers after the
-implementation, so the load numbers below are predictions.
+**Status: everything is implemented, and the group's load on a Raspberry Pi 4 is
+measured** (see *Load on a Raspberry Pi 4B*). The design maximum is **4 multiplexes**
+(mode B, 9/10 kHz each) spread up to **1 MHz** apart; the first target is 2 (25.76
+and 25.78 MHz).
 
 ## Goal
 
@@ -188,39 +186,46 @@ It must check, per multiplex and for the group:
 
 ## Load on a Raspberry Pi 4B
 
-Extrapolated from the measured single-multiplex numbers (`fast`, 2 Msps, 1.8 GHz, no
-throttling): the shared resampler is about 55 % of one core, a multiplex with 1-3
-services about 5 %, and a per-multiplex stage at `Fi` about 55 % x `Fi` / 2 Msps.
+Measured 2026-11-08 with `fast`, 2 Msps, a file output (no radio, no USB), 20 s of
+signal per case, on a Pi 4B Rev 1.4 (8 GB), Ubuntu, ARM clock 1.4 GHz, no
+throttling (`get_throttled` `0x0` before and after, 51 °C → 62 °C, a fan), by
+`measure-group.sh`:
 
-| Carriers | Fi 48 kHz (span <= 36 kHz) | Fi 96 kHz (<= 84 kHz) | Fi 192 kHz (<= 180 kHz) |
-|---|---|---|---|
-| 1 | ~60 % | ~63 % | ~65 % |
-| 2 | ~68 % | ~70 % | ~76 % |
-| 3 | ~74 % | ~78 % | ~86 % |
-| 4 | ~80 % | ~86 % | ~96 % |
+| Carriers | Separation | Strategy | Wall vs signal | CPU (wall) | Work, % of one core |
+|---|---|---|---|---|---|
+| 1 | n/a | Fi 48 kHz, one thread | 1.79x | 100 % | 56 % |
+| 2 | 20 kHz | Fi 48 kHz, one thread | 1.65x | 100 % | 61 % |
+| 3 | 140 kHz | Fi 192 kHz, one thread | 1.33x | 100 % | 75 % |
+| 4 | 180 kHz | Fi 192 kHz, one thread | 1.22x | 100 % | 82 % |
+| 2 | 300 kHz | a stage each, 2 threads | 1.47x | 169 % | 115 % |
+| 4 | 900 kHz | a stage each, 4 threads | 1.22x | 279 % | 228 % |
 
-- The narrow strategies (`Fi` 48/96/192) are one thread (the `GroupStation` builds and
-  combines on the caller's thread), so the sum must stay under 100 %: four carriers
-  near 180 kHz are about the limit and are the case to measure on the Pi.
-- Above about 180 kHz a resampler per multiplex costs about 60 % of a core each, but
-  the stages run on their own threads (one per multiplex, spawned per frame), so the
-  cost spreads across cores: four carriers want about 240 % of a core in total, about
-  60 % of each of the Pi's four cores, and fit. The multiplexes themselves and the
-  mixing stay on the caller's thread (about 5 % each) and pace the workers.
-- 18 and 20 kHz multiplexes need `balanced` (about four times the resampler) and do not
-  scale past one carrier on a Pi.
+- **Wall vs signal** is the real-time factor; **CPU (wall)** is user+sys over the wall
+  time (a single-threaded case always shows 100 %: it is the only thread there), and
+  **work** is the core-seconds per second of signal (CPU x wall / signal): the load to
+  compare with one core. Four carriers at the 180 kHz limit use about 82 % of one core
+  and keep 1.22x real time.
+- The wide cases spread over their threads: two carriers use 115 % of a core on two
+  threads, four use 228 % (about 0.6 of each of the Pi's four cores) and keep 1.22x
+  real time too. The old prediction of about 240 % for four carriers was close.
+- The narrow predictions (60-96 %) were pessimistic: measured 56-82 % for one to four
+  carriers, including the 140 kHz case of the station in `station-talk-31.toml`.
+- The file output skips the HackRF sink (USB writes and, at a rate the radio cannot
+  take, the sink's own resampler): on the air expect a little more.
+- The ARM clock was 1.4 GHz, not the 1.8 GHz of the older single-multiplex numbers, so
+  a 1.8 GHz Pi has headroom to spare.
+- 18 and 20 kHz multiplexes need `balanced` (about four times the resampler); that is
+  not measured here and will not scale past one carrier on a Pi.
 - More services add about 1-2 points each; RAM is a few MB per multiplex.
 - The mixer is a recursive phasor: one complex multiply per sample, renormalized every
   4096 samples, so the shift adds little next to the resamplers.
 
-These are predictions; after the implementation, run a `step0`-style measurement with
-1, 2 and 4 multiplexes (9/10 kHz: a narrow group, 140 kHz and the 1 MHz span) on a Pi 4
-with a fan, record the CPU and `get_throttled`, and put the measured numbers here.
-`measure-group.sh` (the local `station/pi-step0` set) does exactly that: it generates
-six cases (1, 2, 3 and 4 carriers up to the 180 kHz limit, and 300 kHz and 900 kHz
-spans), writes each composite to a WAV (no radio, no network), and prints a SUMMARY
-table with the CPU of one core, the real-time factor, the plan's strategy line and
-`get_throttled` before and after.
+Re-run it with `measure-group.sh` (the local `station/pi-step0` set): it generates the
+six cases (1, 2, 3 and 4 carriers up to the 180 kHz limit, 300 kHz and 900 kHz spans),
+writes each composite to a WAV (no radio, no network), and prints a SUMMARY table with
+the work of one core, the CPU over the wall time, the real-time factor, the plan's
+strategy line and `get_throttled`
+before and after.
 
 ## Work breakdown
 
@@ -235,7 +240,7 @@ table with the CPU of one core, the real-time factor, the plan's strategy line a
 5. Docs (USER_GUIDE, BUILD.md with the load table, FORK.md) and an example station file
    - about half a day.
 6. Pi 4 measurement with 1/2/4 multiplexes, 9/10 kHz, both strategies, with a fan and
-   `get_throttled` recorded - about half a day.
+   `get_throttled` recorded - done 2026-11-08 (see the load section).
 7. GUI: show and edit the multiplexes - 1-2 days, optional, can ship later.
 
 ## Risks and decisions
