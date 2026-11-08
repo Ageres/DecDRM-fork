@@ -1,8 +1,33 @@
 # AGENTS.md — DecDRM-fork (Ageres)
 
 Fork of `CasualArclamp/DecDRM`: a Rust DRM30 receiver and transmitter. Read
-`docs/DESIGN.md` for the architecture and `CLAUDE.md` for the upstream crate map —
-but its git and CI sections are upstream's; this file wins for this fork.
+`docs/DESIGN.md` for the architecture; this file is the working agreement for this
+fork. `reference/` (Dream r1548 and the DRM spec as text, `es_201980v040201p.txt`) is
+local and untracked: grep it for clause numbers and tables.
+
+## Crates
+
+- `crates/decdrm-core` — the DRM30 PHY/FEC/multiplex, the receiver and transmitter
+  chains, the channel simulator, DSP (pure Rust, `f64`).
+- `crates/decdrm-codecs` (+ `-fdk-sys`, `-opus-sys`, `-xaac-sys`) — FDK-AAC, libopus
+  and libxaac (xHE-AAC) FFI: the encoders behind the audio services.
+- `crates/decdrm-io` — WAV/FLAC, resampling (rubato), sound card (cpal).
+- `crates/decdrm-data` — packet mode, MOT, Journaline, EPG, BWS, TPEG.
+- `crates/decdrm-engine` — the receiver's worker thread and session: inputs (file,
+  sound card, KiwiSDR, MDI) to audio, text and data.
+- `crates/decdrm-station` — the transmitter application layer: the TOML station
+  config, the plans, `Station` and `GroupStation` (this fork's feature), feeds.
+- `crates/decdrm-schedule` — DRM broadcast schedules (Dream's `DRMSchedule.ini`,
+  EiBi CSV).
+- `crates/decdrm-mdi` — MDI (TS 102 820) and RSCI/RCI over DCP, recordings.
+- `crates/decdrm-kiwi` — the KiwiSDR client and a mock for tests.
+- `crates/decdrm-evs` — EVS signalling for recognition only: never add 3GPP/EVS
+  reference code (copyright, patents).
+- `crates/decdrm-dac` — the DAC neural codec extension; its weights live in the
+  untracked `models/`, `candle` only behind the `dac` feature.
+- `apps/decdrm-cli` (binary `decdrm`) and `apps/decdrm-gui` (egui).
+- `third_party/` — pinned submodules (fdk-aac, opus, libxaac): clone with
+  `--recursive`.
 
 ## Git
 
@@ -48,7 +73,9 @@ but its git and CI sections are upstream's; this file wins for this fork.
 Never commit and never "clean up": `station/` (personal station files, including
 `station-talk-31.toml`), `station/pi-step0/` (the Pi measurement scripts and past
 logs), `samples/`, `reference/`, `models/`, `out/`, `exe/`. The Pi project is at
-`/home/bsv/project/github/Ageres/DecDRM-fork`.
+`/home/bsv/project/github/Ageres/DecDRM-fork`. The repository is public: no
+recordings, reference material, model weights, secrets, third-party material or
+3GPP/EVS reference code.
 
 ## Hardware
 
