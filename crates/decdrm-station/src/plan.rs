@@ -59,7 +59,7 @@
 //! SDC type 9 carries.
 
 use crate::config::{
-    AppKind, Codec, HackrfSettings, Part, ResamplerSetting, SbrRatio, SignalFormat, StationConfig,
+    AppKind, ChannelSettings, Codec, HackrfSettings, Part, ResamplerSetting, SbrRatio, SignalFormat, StationConfig,
 };
 use crate::error::{ConfigProblems, Result, StationError};
 use crate::sdc;
@@ -273,6 +273,18 @@ impl MultiplexPlan {
                 if cfg.services.is_empty() { "" } else { " (the file's services are not used)" }
             );
         }
+        let mut s = self.describe_body(cfg);
+        if let Some(h) = &cfg.output.hackrf {
+            s.push_str(&describe_hackrf(h, cfg.channel.occupancy));
+        }
+        s.push_str(&describe_afs(cfg));
+        s
+    }
+
+    /// The multiplex itself - the channel, the capacity, the streams and the channel
+    /// simulator - without the output and alternative-frequency lines (a group prints
+    /// those around several of these).
+    pub(crate) fn describe_body(&self, cfg: &StationConfig) -> String {
         let t = &self.tx;
         let mut s = String::new();
         let prot = if self.streams.iter().any(|st| st.lengths.part_a > 0) {
@@ -338,55 +350,220 @@ impl MultiplexPlan {
         if let Some(sim) = &cfg.simulate {
             let _ = writeln!(s, "channel simulator: {}", sim.describe());
         }
+        s
+    }
+}
+
+/// The HackRF output line and its notes (the single multiplex's channel, or each of a
+/// group's).
+fn describe_hackrf(h: &HackrfSettings, occupancy: u8) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "hackrf: {:.4} MHz (LO {:.4} MHz + IF {:.0} kHz), {} Msps, TX gain {} dB{}, resampler {}",
+        h.frequency_hz as f64 / 1e6,
+        h.lo_hz() as f64 / 1e6,
+        h.if_offset_hz / 1e3,
+        h.sample_rate_hz as f64 / 1e6,
+        h.tx_gain_db,
+        if h.amp_enable { ", RF amp on" } else { "" },
+        h.resampler
+    );
+    if h.sample_rate_hz > HackrfSettings::REAL_TIME_RATE_HZ {
+        let hint = if h.resampler == ResamplerSetting::Fast {
+            ""
+        } else {
+            ", and a slow machine can try resampler = \"fast\""
+        };
+        let _ = writeln!(
+            s,
+            "        note: above {} Msps the station may not keep real time (every sample is resampled and written to USB): expect underruns, and the radio may stop taking data; 2 Msps is plenty for DRM{hint}",
+            HackrfSettings::REAL_TIME_RATE_HZ / 1_000_000
+        );
+    } else if h.resampler == ResamplerSetting::Fast && occupancy >= 4 {
+        let _ = writeln!(
+            s,
+            "        note: resampler \"fast\" is flat only to about 10.1 kHz; the 18 and 20 kHz occupancies reach 10 kHz, keep \"balanced\" or \"high\" for them"
+        );
+    }
+    s
+}
+
+/// The alternative-frequency line, if any.
+fn describe_afs(cfg: &StationConfig) -> String {
+    let mut s = String::new();
+    let afs = &cfg.afs;
+    if !afs.is_empty() {
+        let count = |n: usize, what: &str| match n {
+            0 => None,
+            1 => Some(format!("1 {what}")),
+            n => Some(format!("{n} {what}s")),
+        };
+        let parts: Vec<String> = [
+            count(afs.multiplexes.len(), "frequency list"),
+            count(afs.others.len(), "other-system list"),
+            count(afs.schedules.len(), "schedule"),
+            count(afs.regions.len(), "region"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let _ = writeln!(s, "alternative frequencies: {}", parts.join(", "));
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------------
+// Several multiplexes
+// ---------------------------------------------------------------------------------
+
+/// The largest separation of the outermost carriers this design allows, Hz (see
+/// `docs/design/multi-multiplex.md`).
+pub const MAX_SEPARATION_HZ: f64 = 1_000_000.0;
+
+/// How a group's multiplexes are combined into the radio's stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupStrategy {
+    /// The composite is built at an intermediate rate and resampled once.
+    SharedResampler,
+    /// Each multiplex is resampled to the radio's rate on its own, then summed.
+    PerMultiplexResamplers,
+}
+
+/// One multiplex of a group.
+#[derive(Debug, Clone)]
+pub struct GroupedMultiplex {
+    /// Its position among the file's `[[multiplex]]` tables, 0-based (the disabled ones
+    /// are not in the plan but keep their numbers).
+    pub index: usize,
+    /// The DC carrier on air, Hz.
+    pub frequency_hz: u64,
+    /// `frequency_hz - lo_hz`, Hz: where the multiplex sits in the stream.
+    pub offset_hz: f64,
+    /// RMS level in the composite, dBFS.
+    pub level_dbfs: f64,
+    /// The multiplex's own configuration (its channel, services and level).
+    pub cfg: StationConfig,
+    /// Its multiplex plan.
+    pub plan: MultiplexPlan,
+}
+
+/// Several multiplexes in one stream (the `[[multiplex]]` tables).
+#[derive(Debug, Clone)]
+pub struct GroupPlan {
+    pub multiplexes: Vec<GroupedMultiplex>,
+    /// The local oscillator the group is placed around, Hz.
+    pub lo_hz: f64,
+    /// The group centre relative to the LO, Hz (`[output.hackrf] if_offset_hz`).
+    pub if_offset_hz: f64,
+    pub sample_rate_hz: u32,
+    /// The separation of the outermost carriers, Hz.
+    pub span_hz: f64,
+    /// The whole signal's width, Hz (the carriers plus their own spectra).
+    pub signal_span_hz: f64,
+    /// The composite rate before the shared resampler; `None` for
+    /// [`GroupStrategy::PerMultiplexResamplers`].
+    pub intermediate_hz: Option<u32>,
+    pub strategy: GroupStrategy,
+}
+
+impl GroupPlan {
+    /// Human-readable summary (for the CLI).
+    pub fn describe(&self, cfg: &StationConfig) -> String {
+        let mut s = String::new();
         if let Some(h) = &cfg.output.hackrf {
             let _ = writeln!(
                 s,
                 "hackrf: {:.4} MHz (LO {:.4} MHz + IF {:.0} kHz), {} Msps, TX gain {} dB{}, resampler {}",
-                h.frequency_hz as f64 / 1e6,
-                h.lo_hz() as f64 / 1e6,
-                h.if_offset_hz / 1e3,
-                h.sample_rate_hz as f64 / 1e6,
+                (self.lo_hz + self.if_offset_hz) / 1e6,
+                self.lo_hz / 1e6,
+                self.if_offset_hz / 1e3,
+                self.sample_rate_hz as f64 / 1e6,
                 h.tx_gain_db,
                 if h.amp_enable { ", RF amp on" } else { "" },
                 h.resampler
             );
-            if h.sample_rate_hz > HackrfSettings::REAL_TIME_RATE_HZ {
-                let hint = if h.resampler == ResamplerSetting::Fast {
-                    ""
-                } else {
-                    ", and a slow machine can try resampler = \"fast\""
-                };
+        } else if let Some(f) = &cfg.output.file {
+            let _ = writeln!(
+                s,
+                "composite: {} kHz I/Q -> {}",
+                self.sample_rate_hz / 1_000,
+                cfg.resolve(f).display()
+            );
+        }
+        for m in &self.multiplexes {
+            let _ = writeln!(
+                s,
+                "  multiplex {}: {:.4} MHz (IF {:.0} kHz, level {:.1} dBFS)",
+                m.index + 1,
+                m.frequency_hz as f64 / 1e6,
+                m.offset_hz / 1e3,
+                m.level_dbfs
+            );
+            for line in m.plan.describe_body(&m.cfg).lines() {
+                let _ = writeln!(s, "    {line}");
+            }
+        }
+        if cfg.output.split_level {
+            let each = cfg.output.level_dbfs - 10.0 * (self.multiplexes.len() as f64).log10();
+            let _ = writeln!(
+                s,
+                "  levels: {:.1} dBFS over the sum, each {:.2} dBFS (split_level = true)",
+                cfg.output.level_dbfs, each
+            );
+        }
+        for (i, m) in cfg.multiplexes.iter().enumerate() {
+            if m.enabled {
+                continue;
+            }
+            let _ = match m.frequency_hz {
+                Some(f) => writeln!(s, "  multiplex {}: {:.4} MHz (off)", i + 1, f as f64 / 1e6),
+                None => writeln!(s, "  multiplex {}: (off, no frequency)", i + 1),
+            };
+        }
+        match (self.strategy, self.intermediate_hz) {
+            (GroupStrategy::SharedResampler, Some(fi)) => {
                 let _ = writeln!(
                     s,
-                    "        note: above {} Msps the station may not keep real time (every sample is resampled and written to USB): expect underruns, and the radio may stop taking data; 2 Msps is plenty for DRM{hint}",
-                    HackrfSettings::REAL_TIME_RATE_HZ / 1_000_000
+                    "  span: {:.0} kHz between the carriers ({:.0} kHz of signal), limit {:.0} kHz, intermediate rate {:.0} kHz, one composite resampler",
+                    self.span_hz / 1e3,
+                    self.signal_span_hz / 1e3,
+                    MAX_SEPARATION_HZ / 1e3,
+                    fi as f64 / 1e3
                 );
-            } else if h.resampler == ResamplerSetting::Fast && cfg.channel.occupancy >= 4 {
+            }
+            _ => {
                 let _ = writeln!(
                     s,
-                    "        note: resampler \"fast\" is flat only to about 10.1 kHz; the 18 and 20 kHz occupancies reach 10 kHz, keep \"balanced\" or \"high\" for them"
+                    "  span: {:.0} kHz between the carriers ({:.0} kHz of signal), limit {:.0} kHz, a resampler per multiplex ({} threads)",
+                    self.span_hz / 1e3,
+                    self.signal_span_hz / 1e3,
+                    MAX_SEPARATION_HZ / 1e3,
+                    self.multiplexes.len()
                 );
             }
         }
-        let afs = &cfg.afs;
-        if !afs.is_empty() {
-            let count = |n: usize, what: &str| match n {
-                0 => None,
-                1 => Some(format!("1 {what}")),
-                n => Some(format!("{n} {what}s")),
-            };
-            let parts: Vec<String> = [
-                count(afs.multiplexes.len(), "frequency list"),
-                count(afs.others.len(), "other-system list"),
-                count(afs.schedules.len(), "schedule"),
-                count(afs.regions.len(), "region"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            let _ = writeln!(s, "alternative frequencies: {}", parts.join(", "));
-        }
+        s.push_str(&describe_afs(cfg));
         s
+    }
+}
+
+/// The result of [`StationConfig::validate_station`]: one multiplex or a group.
+#[derive(Debug, Clone)]
+pub enum StationPlan {
+    /// One multiplex (the usual form).
+    Single(MultiplexPlan),
+    /// Several multiplexes in one stream (the `[[multiplex]]` tables).
+    Group(GroupPlan),
+}
+
+impl StationPlan {
+    /// Human-readable summary (for the CLI).
+    pub fn describe(&self, cfg: &StationConfig) -> String {
+        match self {
+            Self::Single(plan) => plan.describe(cfg),
+            Self::Group(group) => group.describe(cfg),
+        }
     }
 }
 
@@ -513,6 +690,10 @@ impl Problems {
     fn finish(self) -> Result<()> {
         if self.0.is_empty() { Ok(()) } else { Err(StationError::Config(ConfigProblems(self.0))) }
     }
+
+    fn into_error(self) -> StationError {
+        StationError::Config(ConfigProblems(self.0))
+    }
 }
 
 /// A stream to be allocated.
@@ -541,7 +722,22 @@ impl StationConfig {
     /// the multiplex. Every problem found is reported (see
     /// [`StationError::problems`]).
     pub fn validate(&self) -> Result<MultiplexPlan> {
-        build(self)
+        match self.validate_station()? {
+            StationPlan::Single(plan) => Ok(plan),
+            StationPlan::Group(_) => Err(StationError::config(
+                "several multiplexes are configured: the GUI and Station::new run one multiplex; decdrm tx sends the group (and --check prints its plan)",
+            )),
+        }
+    }
+
+    /// Check the configuration and work out either the single multiplex or, with
+    /// `[[multiplex]]` tables, the whole group.
+    pub fn validate_station(&self) -> Result<StationPlan> {
+        if self.multiplexes.is_empty() {
+            build(self).map(StationPlan::Single)
+        } else {
+            build_group(self).map(StationPlan::Group)
+        }
     }
 }
 
@@ -646,13 +842,14 @@ fn check_output(cfg: &StationConfig, layout: Option<ChannelLayout>, p: &mut Prob
                 h.if_offset_hz
             ));
         }
-        // The channel also has to fit into the radio's passband, centred on the IF.
-        let half = f64::from(h.sample_rate_hz) / 2.0;
+        // The channel also has to fit into the analog TX filter: 3/4 of the sample
+        // rate, which is 1.75 MHz at 2 Msps, so the usable half-band is 875 kHz.
+        let half = f64::from(HackrfSettings::baseband_filter_hz(h.sample_rate_hz)) / 2.0;
         if h.if_offset_hz + band_lo - margin < -half
             || h.if_offset_hz + band_hi + margin > half
         {
             p.push(format!(
-                "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of sample_rate_hz {}",
+                "hackrf: the channel reaches {:.2}..{:.2} kHz from the DC carrier, so if_offset_hz {} puts it at {:.2}..{:.2} kHz, outside +-{:.0} kHz of the transmit filter at sample_rate_hz {}",
                 band_lo / 1e3,
                 band_hi / 1e3,
                 h.if_offset_hz,
@@ -722,11 +919,251 @@ fn build_mdi(cfg: &StationConfig, m: &crate::config::MdiSettings) -> Result<Mult
     })
 }
 
+/// The group of `[[multiplex]]` tables: every multiplex planned on its own, placed
+/// around one local oscillator and checked as a whole (span, overlap, strategy, level).
+fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
+    let mut p = Problems::default();
+    let radio = cfg.output.hackrf.as_ref();
+    if radio.is_none() && cfg.output.file.is_none() {
+        p.push("multiplexes: a group needs [output.hackrf] (the radio) or [output.file] (the composite)");
+    }
+    if radio.is_some() && cfg.output.file.is_some() {
+        p.push("multiplexes: one stream: either [output.hackrf] or [output.file], not both");
+    }
+    if cfg.output.device.is_some() {
+        p.push("multiplexes: with [[multiplex]] the output is [output.hackrf] or [output.file] (one stream), not a sound card");
+    }
+    if radio.is_none() {
+        if cfg.output.format != SignalFormat::Iq {
+            p.push("multiplexes: a composite file is I/Q: [output] format = \"iq\"");
+        }
+        if cfg.output.iq_offset_hz != 0.0 {
+            p.push(format!(
+                "multiplexes: iq_offset_hz {} is not used with [[multiplex]] (the multiplexes' offsets place the carriers)",
+                cfg.output.iq_offset_hz
+            ));
+        }
+    }
+    // One stream, one rate: [output] names it, the radio's section has to agree.
+    let sample_rate_hz = match (cfg.output.sample_rate_hz, radio.map(|h| h.sample_rate_hz)) {
+        (Some(stream), Some(radio)) if stream != radio => {
+            p.push(format!(
+                "multiplexes: [output] sample_rate_hz {stream} and [output.hackrf] sample_rate_hz {radio} differ; the stream has one rate"
+            ));
+            stream
+        }
+        (Some(stream), _) => stream,
+        (None, Some(rate)) => rate,
+        (None, None) => {
+            p.push("multiplexes: a file group needs [output] sample_rate_hz (the composite's rate)");
+            2_000_000
+        }
+    };
+    let if_offset_hz = radio.map_or(0.0, |h| h.if_offset_hz);
+    if cfg.output.split_level && !(-60.0..=0.0).contains(&cfg.output.level_dbfs) {
+        p.push(format!(
+            "output: level_dbfs {} is outside -60..0 dBFS (with split_level it is the whole sum)",
+            cfg.output.level_dbfs
+        ));
+    }
+    if !cfg.services.is_empty() {
+        p.push("multiplexes: with [[multiplex]] the services belong inside the multiplexes ([[multiplex.service]])");
+    }
+    if cfg.mdi.is_some() {
+        p.push("multiplexes: [mdi] cannot be combined with [[multiplex]] yet");
+    }
+    if cfg.channel != ChannelSettings::default() {
+        p.push("multiplexes: [channel] is not used with [[multiplex]] (each multiplex has its own mode, occupancy and protection)");
+    }
+
+    let mut numbered = Vec::new();
+    let mut disabled = Vec::new();
+    for (i, m) in cfg.multiplexes.iter().enumerate() {
+        if !m.unknown.is_empty() {
+            let keys: Vec<&str> = m.unknown.keys().map(String::as_str).collect();
+            p.push(format!(
+                "multiplex {}: unknown field{} {}",
+                i + 1,
+                if keys.len() == 1 { "" } else { "s" },
+                keys.join(", ")
+            ));
+        }
+        match m.frequency_hz {
+            Some(frequency_hz) if m.enabled => numbered.push((i, m, frequency_hz)),
+            Some(frequency_hz) => disabled.push((i, frequency_hz)),
+            None => p.push(format!("multiplex {}: frequency_hz is required (the channel's DC carrier on air)", i + 1)),
+        }
+    }
+    if numbered.is_empty() && disabled.len() == cfg.multiplexes.len() && !cfg.multiplexes.is_empty() {
+        p.push("multiplexes: every multiplex is disabled (enabled = false); enable at least one");
+    }
+    let Some(min) = numbered.iter().map(|(_, _, f)| *f).min() else {
+        return Err(p.into_error());
+    };
+    let max = numbered.iter().map(|(_, _, f)| *f).max().unwrap_or(min);
+    let centre = (min as f64 + max as f64) / 2.0;
+    let span_hz = (max - min) as f64;
+    if span_hz > MAX_SEPARATION_HZ {
+        p.push(format!(
+            "multiplexes: the outermost carriers are {:.0} kHz apart; the limit is {:.0} kHz",
+            span_hz / 1e3,
+            MAX_SEPARATION_HZ / 1e3
+        ));
+    }
+    let lo_hz = centre - if_offset_hz;
+    if radio.is_some() && !(1_000_000.0..=6_000_000_000.0).contains(&lo_hz) {
+        p.push(format!("multiplexes: the local oscillator at {lo_hz:.0} Hz is outside the HackRF's 1 MHz-6 GHz range"));
+    }
+
+    let mut multiplexes = Vec::new();
+    let enabled = numbered.len();
+    for (i, m, frequency_hz) in numbered {
+        let offset_hz = frequency_hz as f64 - lo_hz;
+        let level_dbfs = if cfg.output.split_level {
+            // The whole composite's level, split equally: the powers add up to it.
+            cfg.output.level_dbfs - 10.0 * (enabled as f64).log10()
+        } else {
+            m.level_dbfs.unwrap_or(cfg.output.level_dbfs)
+        };
+        let mut sub = cfg.clone();
+        sub.multiplexes.clear();
+        sub.channel = m.channel.clone();
+        sub.services = m.services.clone();
+        sub.output.level_dbfs = level_dbfs;
+        // The stream's settings are the group's, not a multiplex's.
+        sub.output.sample_rate_hz = None;
+        sub.output.resampler = None;
+        sub.output.split_level = false;
+        if let Some(hs) = sub.output.hackrf.as_mut() {
+            hs.frequency_hz = frequency_hz;
+            hs.if_offset_hz = offset_hz;
+        }
+        match build(&sub) {
+            Ok(plan) => multiplexes.push(GroupedMultiplex { index: i, frequency_hz, offset_hz, level_dbfs, cfg: sub, plan }),
+            Err(StationError::Config(problems)) => {
+                for problem in problems.0 {
+                    p.push(format!("multiplex {}: {problem}", i + 1));
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if multiplexes.len() != enabled {
+        return Err(p.into_error());
+    }
+
+    // No two multiplexes may share spectrum on air.
+    let mut sorted: Vec<&GroupedMultiplex> = multiplexes.iter().collect();
+    sorted.sort_by_key(|m| m.frequency_hz);
+    for pair in sorted.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (_, a_high) = decdrm_core::tx::output::carrier_span_hz(a.plan.layout);
+        let (b_low, _) = decdrm_core::tx::output::carrier_span_hz(b.plan.layout);
+        let a_top = a.frequency_hz as f64 + a_high;
+        let b_bottom = b.frequency_hz as f64 + b_low;
+        if b_bottom < a_top {
+            p.push(format!(
+                "multiplexes: {:.4} and {:.4} MHz overlap ({:.1} kHz)",
+                a.frequency_hz as f64 / 1e6,
+                b.frequency_hz as f64 / 1e6,
+                (a_top - b_bottom) / 1e3
+            ));
+        }
+    }
+
+    // The cheap strategy: the group, relative to its centre and before the group's IF
+    // is applied, fits into the intermediate rate.
+    let signal_span_hz = sorted
+        .iter()
+        .map(|m| {
+            let (_, high) = decdrm_core::tx::output::carrier_span_hz(m.plan.layout);
+            m.frequency_hz as f64 + high
+        })
+        .fold(f64::MIN, f64::max)
+        - sorted
+            .iter()
+            .map(|m| {
+                let (low, _) = decdrm_core::tx::output::carrier_span_hz(m.plan.layout);
+                m.frequency_hz as f64 + low
+            })
+            .fold(f64::MAX, f64::min);
+    let max_relative = sorted
+        .iter()
+        .map(|m| {
+            let (low, high) = decdrm_core::tx::output::carrier_span_hz(m.plan.layout);
+            let relative = m.offset_hz - if_offset_hz;
+            (relative + low).abs().max((relative + high).abs())
+        })
+        .fold(0.0_f64, f64::max);
+    // The composite must fit the stream's sample rate (a file output has no analog
+    // filter to catch this; the radio's per-multiplex filter check is stricter).
+    if signal_span_hz > f64::from(sample_rate_hz) {
+        p.push(format!(
+            "multiplexes: the group spans {:.0} kHz of signal but the stream's sample rate is {:.0} kHz; raise [output] sample_rate_hz (or [output.hackrf] sample_rate_hz)",
+            signal_span_hz / 1e3,
+            f64::from(sample_rate_hz) / 1e3
+        ));
+    }
+    let intermediate_hz = [48_000u32, 96_000, 192_000]
+        .into_iter()
+        .find(|fi| max_relative <= f64::from(*fi) / 2.0 - 1_000.0);
+    let strategy = if intermediate_hz.is_some() {
+        GroupStrategy::SharedResampler
+    } else {
+        GroupStrategy::PerMultiplexResamplers
+    };
+
+    // The sum must not clip the 8-bit DAC. OFDM has a crest factor of about 14 dB
+    // (measured on the HackRF path), so the RMS of the sum has to stay that far below
+    // full scale for the peaks to fit.
+    const CREST_DB: f64 = 14.0;
+    // The powers add up: the multiplexes are on different frequencies.
+    let sum_dbfs = if cfg.output.split_level {
+        cfg.output.level_dbfs
+    } else {
+        10.0 * multiplexes.iter().map(|m| 10f64.powf(m.level_dbfs / 10.0)).sum::<f64>().log10()
+    };
+    if sum_dbfs > -CREST_DB {
+        let hint = if cfg.output.split_level {
+            format!("set [output] level_dbfs to about {:.1}", -CREST_DB)
+        } else {
+            format!(
+                "set the levels to about {:.1} dBFS each",
+                -CREST_DB - 10.0 * (multiplexes.len() as f64).log10()
+            )
+        };
+        p.push(format!(
+            "multiplexes: the levels add up to {sum_dbfs:.1} dBFS RMS; the OFDM peaks reach about {CREST_DB:.0} dB higher and clip the 8-bit DAC - {hint}"
+        ));
+    }
+
+    p.finish()?;
+    Ok(GroupPlan {
+        multiplexes,
+        lo_hz,
+        if_offset_hz,
+        sample_rate_hz,
+        span_hz,
+        signal_span_hz,
+        intermediate_hz,
+        strategy,
+    })
+}
+
 fn build(cfg: &StationConfig) -> Result<MultiplexPlan> {
     if let Some(m) = &cfg.mdi {
         return build_mdi(cfg, m);
     }
     let mut p = Problems::default();
+    if cfg.output.sample_rate_hz.is_some() {
+        p.push("output: sample_rate_hz is for [[multiplex]] (a single multiplex's rate is the output's)");
+    }
+    if cfg.output.resampler.is_some() {
+        p.push("output: resampler is for [[multiplex]] (a single multiplex takes [output.hackrf]'s resampler)");
+    }
+    if cfg.output.split_level {
+        p.push("output: split_level is for [[multiplex]] (a single multiplex takes level_dbfs as it is)");
+    }
     let ch = &cfg.channel;
 
     // --- Channel.

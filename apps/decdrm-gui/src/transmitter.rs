@@ -17,7 +17,7 @@
 use crate::plots::SpectrumPlot;
 use crate::spectrum::SpectrumAverager;
 use crate::tx_config::signal_band;
-use decdrm_station::{MultiplexPlan, Station, StationConfig, StationStatus, StopHandle};
+use decdrm_station::{GroupStation, Station, StationConfig, StationPlan, StationStatus, StopHandle};
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -72,7 +72,7 @@ struct TxWorker {
 }
 
 impl TxWorker {
-    fn start(cfg: StationConfig, plan: MultiplexPlan, frames: Option<u64>) -> Self {
+    fn start(cfg: StationConfig, plan: StationPlan, frames: Option<u64>) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (ev_tx, ev_rx) = mpsc::channel();
         let first = TxSnapshot {
@@ -159,7 +159,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// the inputs have ended, then finish it (completing the file).
 fn run(
     cfg: StationConfig,
-    plan: MultiplexPlan,
+    plan: StationPlan,
     mut snap: TxSnapshot,
     cmd: &Receiver<Cmd>,
     events: &Sender<TxEvent>,
@@ -176,73 +176,154 @@ fn run(
     if let Ok(mut slot) = stop.lock() {
         *slot = Some(handle.clone());
     }
-    let mut station = Station::with_plan_and_stop(cfg, plan, handle).map_err(|e| e.to_string())?;
-    for line in station.take_log() {
+    let mut running = match plan {
+        StationPlan::Single(plan) => {
+            Running::Single(Box::new(Station::with_plan_and_stop(cfg, plan, handle).map_err(|e| e.to_string())?))
+        }
+        StationPlan::Group(group) => {
+            Running::Group(Box::new(GroupStation::with_stop(cfg, group, handle).map_err(|e| e.to_string())?))
+        }
+    };
+    for line in running.take_log() {
         log(line);
     }
-    let plan = station.plan();
-    let (dc, band) = signal_band(plan.layout, plan.output.format);
-    let channels = station.output_channels();
+    let (dc, band) = running.band().unzip();
+    let channels = running.output_channels();
     snap.real_output = channels == 1;
-    snap.dc_hz = Some(dc);
-    snap.band_hz = Some(band);
+    snap.dc_hz = dc;
+    snap.band_hz = band;
     snap.started = true;
-    if let Some(dev) = &station.status().device {
+    if let Some(dev) = &running.status().device {
         log(format!("sound card: {dev}"));
     }
     let frames = snap.frames_limit;
+    // The spectrum plot is the 48 kHz baseband of one multiplex; a group's stream
+    // comes at the radio's rate and has no such plot.
+    let spectrum_frames = matches!(running, Running::Single(_));
     let mut spectrum = SpectrumAverager::new();
     let mut last_publish: Option<Instant> = None;
-    publish(shared, &mut snap, station.status(), &spectrum);
+    publish(shared, &mut snap, running.status(), &spectrum);
 
     let reason = loop {
         match cmd.try_recv() {
             Ok(Cmd::Stop) | Err(TryRecvError::Disconnected) => break "stopped",
             // What changed goes to the station's log, taken after the frame.
             Ok(Cmd::ReloadJournaline) => {
-                station.reload_journaline();
+                running.reload_journaline();
             }
             Err(TryRecvError::Empty) => {}
         }
         match frames {
-            Some(n) if station.status().frames >= n => break "duration reached",
-            None if station.inputs_finished() => break "all inputs have ended",
+            Some(n) if running.status().frames >= n => break "duration reached",
+            None if running.inputs_finished() => break "all inputs have ended",
             _ => {}
         }
         let due = last_publish.is_none_or(|t| t.elapsed() >= PUBLISH_INTERVAL);
-        // `transmit_frame` returns a slice borrowed from the station; it is used inside
-        // `map`, so the result below holds no borrow and `finish` may consume the
-        // station. (The spectrum only needs the frames that are published.)
-        let sent = station.transmit_frame().map(|samples| {
-            if due {
+        // `transmit_frame` returns a slice borrowed from the running station; it is
+        // used inside `map`, so the result below holds no borrow and `finish` may
+        // consume it. (The spectrum only needs the frames that are published.)
+        let sent = running.transmit_frame().map(|samples| {
+            if due && spectrum_frames {
                 spectrum.push(samples, channels);
             }
         });
         // The inputs' own log: a web stream's connections, titles, reconnections.
-        for line in station.take_log() {
+        for line in running.take_log() {
             log(line);
         }
         if let Err(e) = sent {
             // Still complete the output file, so what was sent is readable.
-            let _ = station.finish();
+            let _ = running.finish();
             return Err(e.to_string());
         }
         if due {
             // A modulator's channel comes with the MDI: the band marks follow it.
-            let plan = station.plan();
-            let (dc, band) = signal_band(plan.layout, plan.output.format);
-            snap.dc_hz = Some(dc);
-            snap.band_hz = Some(band);
-            publish(shared, &mut snap, station.status(), &spectrum);
+            if let Some((dc, band)) = running.band() {
+                snap.dc_hz = Some(dc);
+                snap.band_hz = Some(band);
+            }
+            publish(shared, &mut snap, running.status(), &spectrum);
             last_publish = Some(Instant::now());
         }
     };
-    let status = station.finish().map_err(|e| e.to_string())?;
+    let status = running.finish().map_err(|e| e.to_string())?;
     log(format!("{reason} after {:.1} s of signal", status.seconds));
     publish(shared, &mut snap, &status, &spectrum);
     Ok(())
 }
 
+/// A running transmitter: one multiplex's station, or a group of them.
+enum Running {
+    Single(Box<Station>),
+    Group(Box<GroupStation>),
+}
+
+impl Running {
+    fn transmit_frame(&mut self) -> decdrm_station::Result<&[f32]> {
+        match self {
+            Self::Single(station) => station.transmit_frame(),
+            Self::Group(group) => group.transmit_frame(),
+        }
+    }
+
+    fn status(&self) -> &StationStatus {
+        match self {
+            Self::Single(station) => station.status(),
+            Self::Group(group) => group.status(),
+        }
+    }
+
+    fn take_log(&mut self) -> Vec<String> {
+        match self {
+            Self::Single(station) => station.take_log(),
+            Self::Group(group) => group.take_log(),
+        }
+    }
+
+    fn reload_journaline(&mut self) {
+        match self {
+            Self::Single(station) => {
+                station.reload_journaline();
+            }
+            Self::Group(group) => {
+                group.reload_journaline();
+            }
+        }
+    }
+
+    fn inputs_finished(&self) -> bool {
+        match self {
+            Self::Single(station) => station.inputs_finished(),
+            Self::Group(group) => group.inputs_finished(),
+        }
+    }
+
+    fn finish(self) -> decdrm_station::Result<StationStatus> {
+        match self {
+            Self::Single(station) => station.finish(),
+            Self::Group(group) => group.finish(),
+        }
+    }
+
+    /// The DC carrier and occupied band for the spectrum plot; a group's stream is not
+    /// the 48 kHz baseband that plot shows.
+    fn band(&self) -> Option<(f64, (f64, f64))> {
+        match self {
+            Self::Single(station) => {
+                let plan = station.plan();
+                Some(signal_band(plan.layout, plan.output.format))
+            }
+            Self::Group(_) => None,
+        }
+    }
+
+    fn output_channels(&self) -> usize {
+        match self {
+            Self::Single(station) => station.output_channels(),
+            Self::Group(_) => 2,
+        }
+    }
+}
 fn publish(
     shared: &Mutex<TxSnapshot>,
     snap: &mut TxSnapshot,
@@ -301,7 +382,7 @@ impl TxSession {
     pub fn start(
         &mut self,
         cfg: StationConfig,
-        plan: MultiplexPlan,
+        plan: StationPlan,
         frames: Option<u64>,
         label: String,
     ) {

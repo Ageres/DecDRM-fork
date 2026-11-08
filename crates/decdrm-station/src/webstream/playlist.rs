@@ -1,7 +1,7 @@
 //! Playlists that point to a stream: M3U / M3U8 (a list of URLs, `#` lines are comments
-//! or `#EXTINF` information) and PLS (`[playlist]` with `File1=…`). HLS playlists — M3U8
-//! files listing media *segments* (`#EXT-X-…` tags) — are recognised and refused: the
-//! station plays continuous streams only.
+//! or `#EXTINF` information) and PLS (`[playlist]` with `File1=:`). HLS playlists - M3U8
+//! files listing media *segments* (`#EXT-X-:`) - are handled by [`super::hls`], not here:
+//! this module only resolves the stream a plain playlist names.
 
 /// Content types of playlists.
 pub(crate) fn is_playlist_type(content_type: &str) -> bool {
@@ -45,8 +45,8 @@ pub(crate) fn entries(text: &str) -> Result<Vec<String>, String> {
         let u = l.to_ascii_uppercase();
         u.starts_with("#EXT-X-TARGETDURATION") || u.starts_with("#EXT-X-STREAM-INF") || u.starts_with("#EXT-X-MEDIA-SEQUENCE")
     }) {
-        return Err("this is an HLS playlist (segmented stream), which is not supported; use the station's \
-                    Icecast/SHOUTCAST stream URL"
+        return Err("this is an HLS playlist (a segmented stream without `#EXT-X-` support here); \
+                    the web stream worker hands HLS to `webstream::hls`"
             .into());
     }
     let list: Vec<String> = if lines.first().is_some_and(|l| l.eq_ignore_ascii_case("[playlist]")) {

@@ -26,6 +26,11 @@ Compared with the base (`git diff f387499..HEAD`):
   frequency plan (an LO plus an IF offset), a prebuffer queue with a drain at the end
   of the signal, underrun counting, and restarting the transmitter after a wedged bulk
   write (shown as *recoveries* in the status).
+- **Several multiplexes in one stream** (`[[multiplex]]`): every multiplex with its own
+  frequency, channel and services, planned and checked as a group (up to four carriers,
+  at most 1 MHz apart) and combined into one stream, with one shared resampler for a
+  narrow group and one resampler per multiplex (a thread each) for a wide one; a group
+  can also write its composite (I/Q at its own rate) to a file instead of the radio.
 - **The resampler setting** (`resampler = "fast" | "balanced" | "high"`): the 48 kHz
   baseband has to be resampled to the radio's sample rate, which is the most expensive
   step on a small machine. The setting trades quality for CPU, and the transmit plan
@@ -48,20 +53,24 @@ Compared with the base (`git diff f387499..HEAD`):
 ## Versions
 
 The fork numbers its releases **on its own line**, starting at **1.0.0**. It does not
-reuse upstream numbers, so a fork build says `decdrm 1.0.0` and cannot be taken for an
-upstream one. Each fork release records the upstream release it is based on:
+reuse upstream numbers, so a fork build says its own version (`decdrm 1.x.y`) and cannot
+be taken for an upstream one. Each fork release records the upstream release it is
+based on:
 
 | Fork | Upstream base | What it adds |
 |---|---|---|
 | 1.0.0 | `v0.7.0` (`f387499`) | the HackRF One output with the resampler setting and the write recovery, the station and GUI integration, `stationctl`, the Pi 4 guide |
+| 1.1.0 | `v0.7.0` (`f387499`) | the multi-multiplex groups (up to four carriers through one HackRF, `split_level`, a composite to a file) and the HLS web stream input (playlists, AES-128, MPEG-TS segments), with the measured Pi 4 load |
 
 The rules:
 
 - The version lives in one place, `[workspace.package] version` in the root
   `Cargo.toml`; the crates and the applications inherit it, and `Cargo.lock` follows.
-- Bump the **minor** version when an upstream release is merged (1.1.0 for upstream
-  0.8.0), the **patch** version for fixes in the fork's own code. The fork's major
-  version does not follow upstream's.
+- Bump the **minor** version for a release with new functionality - the fork's own
+  (1.1.0: several multiplexes through one HackRF and the HLS input) or an upstream
+  release merged into it (that merge takes the next minor as well, e.g. 1.2.0 after
+  1.1.0). Bump the **patch** version for a release with only fixes in the fork's own
+  code. The fork's major version does not follow upstream's.
 - A release is a "Version X.Y.Z" commit with an annotated tag `vX.Y.Z` on it. The
   release workflow (`.github/workflows/release.yml`) builds the portable Windows
   executables from the tag and refuses to publish when `decdrm --version` does not

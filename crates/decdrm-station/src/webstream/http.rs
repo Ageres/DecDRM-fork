@@ -223,10 +223,14 @@ pub(crate) struct Request {
     pub connect_timeout: Duration,
     /// Longest wait for the response header and, later, for more body data.
     pub io_timeout: Duration,
+    /// Ask for this byte range of the body (`Range: bytes=start-end`, inclusive).
+    pub range: Option<(u64, u64)>,
 }
 
 /// A response whose status was 2xx, with its body still to be read.
 pub(crate) struct Response {
+    /// The status code (200, 206 for a byte range, ...).
+    pub status: u16,
     /// The URL that answered (after redirects).
     pub url: Url,
     /// Header names in lower case, values as sent (UTF-8, or Latin-1 when not UTF-8).
@@ -250,7 +254,7 @@ pub(crate) fn get(url: &Url, req: &Request) -> Result<Response, HttpError> {
         match status {
             200..=299 => {
                 let body = Body::new(reader, &headers);
-                return Ok(Response { url, headers, body });
+                return Ok(Response { status, url, headers, body });
             }
             301 | 302 | 303 | 307 | 308 => {
                 let location = header("location").ok_or_else(|| {
@@ -289,6 +293,9 @@ fn request(url: &Url, req: &Request) -> Result<Head, HttpError> {
     );
     if req.icy_metadata {
         head.push_str("Icy-MetaData: 1\r\n");
+    }
+    if let Some((start, end)) = req.range {
+        head.push_str(&format!("Range: bytes={start}-{end}\r\n"));
     }
     if let Some(user) = &url.userinfo {
         head.push_str(&format!("Authorization: Basic {}\r\n", base64(user.as_bytes())));
@@ -334,6 +341,12 @@ impl std::error::Error for StopRequested {}
 /// Whether `e` is the error a read returns after a stop request.
 pub(crate) fn is_stopped(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<StopRequested>())
+}
+
+/// The error reads should return after a stop request: [`is_stopped`] recognises it,
+/// and std's `read_to_end` and friends do not retry it (an `Interrupted` one they do).
+pub(crate) fn stop_error() -> io::Error {
+    io::Error::other(StopRequested)
 }
 
 fn read_line(reader: &mut BufReader<Conn>, total: &mut usize) -> io::Result<String> {

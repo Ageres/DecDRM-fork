@@ -155,10 +155,13 @@ struct Sync {
 pub(crate) struct HackrfSink {
     settings: HackrfSettings,
     sync: Arc<Sync>,
-    /// Resampling and the IF mixer, run by the station's thread.
-    resampler: Resampler,
+    /// Resampling and the IF mixer, run by the station's thread; absent when the
+    /// caller feeds the radio's rate already (a group combiner).
+    resampler: Option<Resampler>,
     /// The resampler's output, reused between frames.
     resampled: Vec<f32>,
+    /// Samples the 8-bit conversion had to clip so far.
+    clipped: u64,
     mixer: Mixer,
     prebuffer_bytes: usize,
     writer: Option<std::thread::JoinHandle<()>>,
@@ -169,6 +172,16 @@ impl HackrfSink {
     /// and start the writer thread. Transmitting begins once `buffer_s` of
     /// signal has been queued; until then the samples just wait in the queue.
     pub fn open(settings: &HackrfSettings) -> Result<Self> {
+        Self::open_inner(settings, true)
+    }
+
+    /// Like [`Self::open`], but the samples come at the radio's rate already (the
+    /// group combiner), so the sink does not resample them.
+    pub fn open_resampled(settings: &HackrfSettings) -> Result<Self> {
+        Self::open_inner(settings, false)
+    }
+
+    fn open_inner(settings: &HackrfSettings, resample: bool) -> Result<Self> {
         let mut handle = open_device(settings.serial.as_deref())?;
         // Linux: the kernel's driver (if any) is detached for our claims.
         let _ = handle.set_auto_detach_kernel_driver(true);
@@ -182,8 +195,11 @@ impl HackrfSink {
         set_amp(&mut handle, settings.amp_enable)?;
 
         let rate = settings.sample_rate_hz;
-        let resampler = Resampler::new(48_000, rate, 2, settings.resampler.quality())
-            .map_err(StationError::Output)?;
+        let resampler = if resample {
+            Some(Resampler::new(48_000, rate, 2, settings.resampler.quality()).map_err(StationError::Output)?)
+        } else {
+            None
+        };
         let prebuffer_bytes = prebuffer_bytes(settings);
 
         let sync = Arc::new(Sync::default());
@@ -199,6 +215,7 @@ impl HackrfSink {
             sync,
             resampler,
             resampled: Vec::new(),
+            clipped: 0,
             mixer: Mixer::new(settings.if_offset_hz, f64::from(rate)),
             prebuffer_bytes,
             writer: Some(writer),
@@ -233,6 +250,11 @@ impl HackrfSink {
         self.sync.state.lock().expect("the queue lock").recoveries
     }
 
+    /// Samples the 8-bit conversion clipped so far.
+    pub fn clipped_samples(&self) -> u64 {
+        self.clipped
+    }
+
     /// Queue interleaved 48 kHz I/Q samples for the radio. Waits while the
     /// queue holds more than the prebuffer of headroom (checking `stop` in
     /// slices), which paces the station to real time.
@@ -244,11 +266,16 @@ impl HackrfSink {
         // 1–2: resample to the HackRF's rate, shift the spectrum to the IF and
         //      scale to 8-bit signed I/Q (see `shift_and_convert`).
         // The output is the input rate times the HackRF's, two bytes per frame.
-        let rate = self.settings.sample_rate_hz as usize;
-        let mut bytes = Vec::with_capacity(samples.len() * rate / 48_000 + 4 * 1024);
-        self.resampled.clear();
-        self.resampler.process_into(samples, &mut self.resampled);
-        shift_and_convert(&self.resampled, &mut self.mixer, &mut bytes);
+        let input: &[f32] = match self.resampler.as_mut() {
+            Some(r) => {
+                self.resampled.clear();
+                r.process_into(samples, &mut self.resampled);
+                &self.resampled
+            }
+            None => samples,
+        };
+        let mut bytes = Vec::with_capacity(input.len() + 4 * 1024);
+        self.clipped += shift_and_convert(input, &mut self.mixer, &mut bytes);
         // 3. Hand them over, then wait for the headroom to free up.
         let mut s = self.sync.state.lock().expect("the queue lock");
         if let Some(e) = &s.error {
@@ -292,13 +319,13 @@ impl HackrfSink {
         }
         // The resampler's tail and enough silence to push it (and whatever the
         // radio still holds) through: the writer paces them out at real time.
-        let tail = self.resampler.flush();
+        let tail = self.resampler.as_mut().map(|r| r.flush()).unwrap_or_default();
         let mut converted = Vec::new();
-        shift_and_convert(&tail, &mut self.mixer, &mut converted);
+        self.clipped += shift_and_convert(&tail, &mut self.mixer, &mut converted);
         s.queue.extend(converted);
         let mut silence = vec![0.0; self.prebuffer_bytes.min(BLOCK_BYTES * 64)];
         let mut converted = Vec::new();
-        shift_and_convert(&silence, &mut self.mixer, &mut converted);
+        self.clipped += shift_and_convert(&silence, &mut self.mixer, &mut converted);
         s.queue.extend(converted);
         silence.clear();
         s.finishing = true;
@@ -572,18 +599,20 @@ impl Mixer {
 /// them to `out` as 8-bit signed I/Q: the format of the HackRF's bulk endpoint.
 /// Full-scale input is clipped, not wrapped (a wrapped int8 would flip sign and
 /// splatter over the whole spectrum).
-fn shift_and_convert(samples: &[f32], mixer: &mut Mixer, out: &mut Vec<u8>) {
+fn shift_and_convert(samples: &[f32], mixer: &mut Mixer, out: &mut Vec<u8>) -> u64 {
+    let mut clipped = 0;
     for frame in samples.as_chunks::<2>().0 {
         let (cos, sin) = mixer.next();
         let (i, q) = (f64::from(frame[0]), f64::from(frame[1]));
         let (i, q) = (i * cos - q * sin, i * sin + q * cos);
-        let (i, q) = (
-            (i * 127.0).round().clamp(-127.0, 127.0),
-            (q * 127.0).round().clamp(-127.0, 127.0),
-        );
+        let (i, q) = ((i * 127.0).round(), (q * 127.0).round());
+        clipped += u64::from(i.abs() > 127.0);
+        clipped += u64::from(q.abs() > 127.0);
+        let (i, q) = (i.clamp(-127.0, 127.0), q.clamp(-127.0, 127.0));
         out.push(i as i8 as u8);
         out.push(q as i8 as u8);
     }
+    clipped
 }
 
 /// Whether the writer may take a block out of the queue: a transmitting radio takes
@@ -802,8 +831,7 @@ fn set_sample_rate(handle: &mut rusb::DeviceHandle<rusb::GlobalContext>, rate_hz
         )
         .map(|_| ())
         .map_err(|e| StationError::Hackrf(format!("setting the sample rate failed: {e}")))?;
-    // 3/4 of the rate, within the filter's 1.75–28 MHz range.
-    let bw = (rate_hz as u64 * 3 / 4).clamp(1_750_000, 28_000_000) as u32;
+    let bw = HackrfSettings::baseband_filter_hz(rate_hz);
     handle
         .write_control(
             request_type_out(),
@@ -886,7 +914,7 @@ mod tests {
             .collect();
         let mut bytes = Vec::with_capacity(n * 2);
         let mut mixer = Mixer::new(if_offset, rate);
-        shift_and_convert(&samples, &mut mixer, &mut bytes);
+        let _ = shift_and_convert(&samples, &mut mixer, &mut bytes);
         assert_eq!(bytes.len(), n * 2);
         // The output frame k is 127·cos/sin of 2πk·(tone + if_offset)/rate;
         // 8-bit rounding allows 1/127 ≈ 0.008, the bound covers the f32 input.
@@ -908,7 +936,7 @@ mod tests {
     fn shift_and_convert_clips() {
         let mut bytes = Vec::new();
         let mut mixer = Mixer::new(0.0, 48_000.0);
-        shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut mixer, &mut bytes);
+        assert_eq!(shift_and_convert(&[2.0, 2.0, -3.0, 0.0], &mut mixer, &mut bytes), 3);
         assert_eq!(bytes, [127, 127, 0x81 /* −127 */, 0]);
     }
 

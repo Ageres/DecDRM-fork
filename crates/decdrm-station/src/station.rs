@@ -69,10 +69,38 @@ pub struct StationStatus {
     pub sdc_capacity: usize,
     /// The last time and date sent in the SDC.
     pub time_sent: Option<String>,
-    /// Per service, in Short Id order (a modulator: the services of the MDI).
+    /// Per service, in Short Id order (a modulator: the services of the MDI; a group:
+    /// the first multiplex's, the others are in [Self::multiplexes]).
     pub services: Vec<ServiceStatus>,
     /// A modulator (`[mdi]`): the MDI input and what was transmitted of it.
     pub mdi: Option<crate::modulator::ModulatorStatus>,
+    /// With several multiplexes: one entry per multiplex. The fields above then
+    /// describe the first one, while the output levels and the radio's counters are
+    /// the whole stream's.
+    pub multiplexes: Vec<MultiplexStatus>,
+}
+
+/// One multiplex of a group, for the status.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MultiplexStatus {
+    /// Its position among the file's `[[multiplex]]` tables, 0-based (a disabled
+    /// multiplex is not in the status but keeps its number).
+    pub index: usize,
+    /// The DC carrier on air, Hz.
+    pub frequency_hz: u64,
+    /// E.g. `B / 10 kHz`.
+    pub mode: String,
+    /// The services of this multiplex, in Short Id order.
+    pub services: Vec<ServiceStatus>,
+    /// Transmission frames (400 ms each) produced.
+    pub frames: u64,
+    /// RMS level of this multiplex's own 48 kHz output, dBFS.
+    pub output_rms_dbfs: f32,
+    /// SDC blocks produced.
+    pub sdc_blocks: u64,
+    /// Data field bytes used by the last SDC block, and the capacity.
+    pub sdc_bytes_used: usize,
+    pub sdc_capacity: usize,
 }
 
 /// Status of one service.

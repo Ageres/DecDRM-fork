@@ -5,7 +5,7 @@
 use crate::settings::TxOutput;
 use decdrm_core::params::ChannelLayout;
 use decdrm_core::tx::output::OutputFormat;
-use decdrm_station::{MultiplexPlan, ResamplerSetting, SignalFormat, StationConfig, StationError};
+use decdrm_station::{ResamplerSetting, SignalFormat, StationConfig, StationError, StationPlan};
 use std::path::{Path, PathBuf};
 
 /// The shipped example (`crates/decdrm-station/examples/station.toml`). Rust note:
@@ -110,10 +110,26 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             };
             cfg.output.file = Some(file.clone());
             cfg.output.device = None;
+            // A group writes its composite (I/Q at the stream's rate) instead of the
+            // radio; its rate and resampler quality come from [output.hackrf] below.
+            if !cfg.multiplexes.is_empty() {
+                if cfg.output.sample_rate_hz.is_none() {
+                    cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
+                }
+                if cfg.output.resampler.is_none() {
+                    cfg.output.resampler = cfg.output.hackrf.as_ref().map(|h| h.resampler);
+                }
+                cfg.output.format = SignalFormat::Iq;
+                cfg.output.iq_offset_hz = 0.0;
+            }
+            // The choice means that output only: the radio would transmit at the same
+            // time ("As configured" keeps whatever the file names).
+            cfg.output.hackrf = None;
         }
         TxOutput::Device => {
             cfg.output.device = Some(ov.device.clone().unwrap_or_else(|| "default".into()));
             cfg.output.file = None;
+            cfg.output.hackrf = None;
         }
         TxOutput::Hackrf => {
             // Only the radio, as with the File and Device choices: the station file
@@ -126,7 +142,17 @@ pub fn prepare(text: &str, base_dir: &Path, ov: &Overrides) -> Result<StationCon
             cfg.output.iq_offset_hz = 0.0;
             cfg.output.iq_swap = false;
             let mut h = cfg.output.hackrf.clone().unwrap_or_default();
-            h.frequency_hz = (ov.hackrf_frequency_khz.max(0.0) * 1_000.0).round() as u64;
+            let frequency_hz = (ov.hackrf_frequency_khz.max(0.0) * 1_000.0).round() as u64;
+            // A group's first enabled multiplex takes the field; the others stay as
+            // the file has them.
+            let first = match cfg.multiplexes.iter_mut().find(|m| m.enabled) {
+                Some(first) => Some(first),
+                None => cfg.multiplexes.first_mut(),
+            };
+            match first {
+                Some(first) => first.frequency_hz = Some(frequency_hz),
+                None => h.frequency_hz = frequency_hz,
+            }
             if let Some(khz) = ov.hackrf_if_khz {
                 h.if_offset_hz = khz * 1_000.0;
             }
@@ -146,9 +172,9 @@ pub fn check(
     text: &str,
     base_dir: &Path,
     ov: &Overrides,
-) -> Result<(StationConfig, MultiplexPlan), Problems> {
+) -> Result<(StationConfig, StationPlan), Problems> {
     let cfg = prepare(text, base_dir, ov)?;
-    let plan = cfg.validate().map_err(|e| Problems::from(&e))?;
+    let plan = cfg.validate_station().map_err(|e| Problems::from(&e))?;
     Ok((cfg, plan))
 }
 
@@ -190,8 +216,16 @@ pub fn inputs_finite(cfg: &StationConfig) -> bool {
 pub fn hackrf_fields(text: &str) -> Option<(f64, f64, u32, bool)> {
     let cfg = StationConfig::from_toml_str(text).ok()?;
     let h = cfg.output.hackrf?;
+    // With [[multiplex]] the quick frequency field edits the first enabled multiplex.
+    let frequency_hz = cfg
+        .multiplexes
+        .iter()
+        .find(|m| m.enabled)
+        .or_else(|| cfg.multiplexes.first())
+        .and_then(|m| m.frequency_hz)
+        .unwrap_or(h.frequency_hz);
     Some((
-        h.frequency_hz as f64 / 1_000.0,
+        frequency_hz as f64 / 1_000.0,
         h.if_offset_hz / 1_000.0,
         h.tx_gain_db,
         h.amp_enable,
@@ -226,7 +260,7 @@ pub fn start_check(
 }
 
 /// One line describing where the signal goes and in which form.
-pub fn describe_output(cfg: &StationConfig, plan: &MultiplexPlan) -> String {
+pub fn describe_output(cfg: &StationConfig, plan: &StationPlan) -> String {
     let o = &cfg.output;
     let mut sinks = Vec::new();
     if let Some(f) = &o.file {
@@ -236,30 +270,49 @@ pub fn describe_output(cfg: &StationConfig, plan: &MultiplexPlan) -> String {
         sinks.push(format!("sound card \"{d}\""));
     }
     if let Some(h) = &o.hackrf {
-        sinks.push(format!(
-            "hackrf at {:.4} MHz",
-            h.frequency_hz as f64 / 1e6
-        ));
+        match plan {
+            StationPlan::Group(g) => {
+                let low = g.multiplexes.iter().map(|m| m.frequency_hz).min().unwrap_or(0);
+                let high = g.multiplexes.iter().map(|m| m.frequency_hz).max().unwrap_or(0);
+                sinks.push(format!(
+                    "hackrf at {:.4}..{:.4} MHz ({} multiplexes)",
+                    low as f64 / 1e6,
+                    high as f64 / 1e6,
+                    g.multiplexes.len()
+                ));
+            }
+            StationPlan::Single(_) => sinks.push(format!("hackrf at {:.4} MHz", h.frequency_hz as f64 / 1e6)),
+        }
     }
     if sinks.is_empty() {
         sinks.push("no output".into());
     }
-    // The plan's output format has the defaults resolved (e.g. the IF frequency).
-    let form = match plan.output.format {
-        OutputFormat::Real { if_hz } => format!("real IF, DC carrier at {:.1} kHz", if_hz / 1e3),
-        OutputFormat::Iq { offset_hz, swap } => format!(
-            "I/Q{}, DC carrier at {:+.1} kHz",
-            if swap { " (swapped)" } else { "" },
-            offset_hz / 1e3
-        ),
-    };
-    format!(
-        "{} — {form}, {:.0} dBFS RMS",
-        sinks.join(" and "),
-        o.level_dbfs
-    )
+    match plan {
+        StationPlan::Single(p) => {
+            // The plan's output format has the defaults resolved (e.g. the IF frequency).
+            let form = match p.output.format {
+                OutputFormat::Real { if_hz } => format!("real IF, DC carrier at {:.1} kHz", if_hz / 1e3),
+                OutputFormat::Iq { offset_hz, swap } => format!(
+                    "I/Q{}, DC carrier at {:+.1} kHz",
+                    if swap { " (swapped)" } else { "" },
+                    offset_hz / 1e3
+                ),
+            };
+            format!("{} - {form}, {:.0} dBFS RMS", sinks.join(" and "), o.level_dbfs)
+        }
+        StationPlan::Group(g) => {
+            let low = g.multiplexes.iter().map(|m| m.level_dbfs).fold(f64::INFINITY, f64::min);
+            let high = g.multiplexes.iter().map(|m| m.level_dbfs).fold(f64::NEG_INFINITY, f64::max);
+            format!(
+                "{} - {} multiplexes in one I/Q stream, {:.0}..{:.0} dBFS RMS each",
+                sinks.join(" and "),
+                g.multiplexes.len(),
+                low,
+                high
+            )
+        }
+    }
 }
-
 /// DC carrier and occupied band (lowest carrier − ½ spacing … highest + ½ spacing) of
 /// the transmitted signal, Hz, in the spectrum of the output channels as a receiver
 /// expecting I on the left sees it: a swapped I/Q output appears mirrored.
@@ -330,6 +383,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `[[multiplex]]` file is checked as a group; the quick frequency field edits
+    /// the first multiplex.
+    #[test]
+    fn a_group_is_checked() {
+        let dir = example_dir_for_tests("group");
+        let text = include_str!("../../../crates/decdrm-station/examples/station-multiplexes.toml");
+        let (cfg, plan) = check(text, &dir, &Overrides::default()).unwrap();
+        assert_eq!(cfg.multiplexes.len(), 2);
+        assert!(matches!(plan, StationPlan::Group(_)));
+        let out = describe_output(&cfg, &plan);
+        assert!(out.contains("2 multiplexes") && out.contains("25.7600..25.7800 MHz"), "{out}");
+        let ov = Overrides {
+            output: TxOutput::Hackrf,
+            hackrf_frequency_khz: 26_000.0,
+            ..Default::default()
+        };
+        let (cfg, plan) = check(text, &dir, &ov).unwrap();
+        assert_eq!(cfg.multiplexes[0].frequency_hz, Some(26_000_000));
+        assert_eq!(cfg.multiplexes[1].frequency_hz, Some(25_780_000));
+        assert!(cfg.output.hackrf.is_some() && plan.describe(&cfg).contains("26.0000 MHz"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The File choice writes a group's composite: no radio, the stream's rate kept.
+    #[test]
+    fn a_group_writes_its_composite_to_a_file() {
+        let dir = example_dir_for_tests("group-file");
+        let text = include_str!("../../../crates/decdrm-station/examples/station-multiplexes.toml");
+        let ov = Overrides {
+            output: TxOutput::File,
+            file: Some(dir.join("group.wav")),
+            hackrf_gain_db: 20,
+            ..Default::default()
+        };
+        let (cfg, plan) = check(text, &dir, &ov).unwrap();
+        assert!(matches!(plan, StationPlan::Group(_)));
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the stream's rate");
+        assert_eq!(
+            cfg.output.resampler,
+            Some(ResamplerSetting::Fast),
+            "the radio's resampler quality"
+        );
+        assert!(cfg.output.format == SignalFormat::Iq);
+        assert!(describe_output(&cfg, &plan).contains("group.wav"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn overrides_replace_the_output() {
         let dir = example_dir_for_tests("overrides");
@@ -339,12 +440,15 @@ mod tests {
             device: None,
             ..Default::default()
         };
-        let cfg = prepare(EXAMPLE_STATION, &dir, &file).unwrap();
+        // A radio in the file is dropped by the File and Device choices too.
+        let with_radio = format!("{EXAMPLE_STATION}\n[output.hackrf]\nsample_rate_hz = 2_000_000\n");
+        let cfg = prepare(&with_radio, &dir, &file).unwrap();
         assert_eq!(
             cfg.output.file.as_deref(),
             Some(dir.join("x.wav").as_path())
         );
         assert!(cfg.output.device.is_none());
+        assert!(cfg.output.hackrf.is_none(), "the file only");
 
         let no_file = Overrides { file: None, ..file };
         assert!(prepare(EXAMPLE_STATION, &dir, &no_file).is_err());
@@ -355,9 +459,10 @@ mod tests {
             device: None,
             ..Default::default()
         };
-        let cfg = prepare(EXAMPLE_STATION, &dir, &device).unwrap();
+        let cfg = prepare(&with_radio, &dir, &device).unwrap();
         assert_eq!(cfg.output.device.as_deref(), Some("default"));
         assert!(cfg.output.file.is_none());
+        assert!(cfg.output.hackrf.is_none(), "the sound card only");
         assert!(
             start_check(&cfg, None, true).is_ok(),
             "a sound card needs no end"

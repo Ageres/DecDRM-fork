@@ -813,12 +813,14 @@ fn hackrf_if_check_uses_the_real_spectrum() {
         });
         cfg.validate().map(|_| ()).map_err(|e| e.problems().to_vec())
     };
-    // 10 kHz: -4.83..+4.83 kHz around the IF, so +990 kHz still fits into +-1 MHz.
-    assert!(check(3, 990_000.0).is_ok());
-    // 20 kHz: -4.64..+14.58 kHz, so the top carrier of +990 kHz lands at 1004.6 kHz.
-    let p = check(5, 990_000.0).unwrap_err();
-    assert!(p.iter().any(|x| x.contains("outside +-1000 kHz")), "{p:?}");
-    assert!(check(5, 985_000.0).is_ok());
+    // The analog filter is 3/4 of the rate (1.75 MHz at 2 Msps), so the usable
+    // half-band is 875 kHz, not 1000.
+    // 10 kHz: -4.83..+4.83 kHz around the IF, so +870 kHz still fits into +-875 kHz.
+    assert!(check(3, 870_000.0).is_ok());
+    // 20 kHz: -4.64..+14.58 kHz, so the top carrier of +870 kHz lands at 884.6 kHz.
+    let p = check(5, 870_000.0).unwrap_err();
+    assert!(p.iter().any(|x| x.contains("outside +-875 kHz")), "{p:?}");
+    assert!(check(5, 860_000.0).is_ok());
 }
 
 /// The whole channel, not only the nominal frequency, has to stay inside the radio's
@@ -844,12 +846,12 @@ fn hackrf_channel_stays_inside_the_radios_range() {
     assert!(check(1_010_000).is_ok(), "1.01 MHz clears it");
 }
 
-/// Every step of the GUI's -950..+950 kHz IF preset grid is usable with a 20 kHz
+/// Every step of the GUI's -850..+850 kHz IF preset grid is usable with a 20 kHz
 /// channel at 2 Msps and a channel frequency that keeps the oscillator in range.
 #[cfg(feature = "hackrf")]
 #[test]
 fn hackrf_if_preset_grid_validates() {
-    for if_khz in (-950..=950).step_by(50) {
+    for if_khz in (-850..=850).step_by(50) {
         let mut cfg = parse(&base());
         cfg.output.file = None;
         cfg.output.format = decdrm_station::SignalFormat::Iq;
@@ -863,4 +865,251 @@ fn hackrf_if_preset_grid_validates() {
             panic!("if_offset_hz {if_khz} kHz should validate: {:?}", e.problems());
         }
     }
+}
+
+// ---------------------------------------------------------------------------------
+// Several multiplexes ([[multiplex]])
+// ---------------------------------------------------------------------------------
+
+/// Two multiplexes in one stream: the group plan, the placing and the strategy.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_group_plan() {
+    let cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
+    let plan = cfg.validate_station().unwrap_or_else(|e| panic!("{e}"));
+    let decdrm_station::StationPlan::Group(group) = plan else { panic!("expected a group") };
+    assert_eq!(group.multiplexes.len(), 2);
+    assert_eq!(group.span_hz, 20_000.0);
+    assert!((group.signal_span_hz - 29_660.0).abs() < 100.0, "{}", group.signal_span_hz);
+    assert_eq!(group.lo_hz, 26_020_000.0);
+    assert_eq!(group.multiplexes[0].offset_hz, -260_000.0);
+    assert_eq!(group.multiplexes[1].offset_hz, -240_000.0);
+    assert_eq!(group.strategy, decdrm_station::GroupStrategy::SharedResampler);
+    assert_eq!(group.intermediate_hz, Some(48_000));
+    let described = group.describe(&cfg);
+    assert!(described.contains("25.7600 MHz") && described.contains("25.7800 MHz"), "{described}");
+    // Sending a group is not implemented yet: validate() says so.
+    let e = cfg.validate().unwrap_err();
+    assert!(has(e.problems(), "run one multiplex"), "{e}");
+    // The configuration round-trips through TOML with its multiplexes.
+    let back = StationConfig::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap();
+    assert_eq!(back.multiplexes.len(), 2);
+    assert_eq!(back.multiplexes[0].frequency_hz, Some(25_760_000));
+    assert_eq!(back.multiplexes[0].services.len(), 1);
+}
+
+/// The group's own checks: the span limit, overlap, missing pieces and clipping.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_group_checks() {
+    let problems_of = |text: String| -> Vec<String> {
+        match parse(&text).validate_station() {
+            Ok(_) => Vec::new(),
+            Err(e) => {
+                assert!(!e.problems().is_empty(), "not a configuration error: {e}");
+                e.problems().to_vec()
+            }
+        }
+    };
+    // 1.1 MHz apart: over the design limit.
+    let p = problems_of(multiplex_text(25_000_000, 26_100_000, -18, ""));
+    assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
+    // Exactly the limit passes (4 Msps: the analog filter has to hold it too), a hair
+    // over does not.
+    let at_limit = multiplex_text(25_000_000, 26_000_000, -18, "").replace("sample_rate_hz = 2_000_000", "sample_rate_hz = 4_000_000");
+    assert_eq!(problems_of(at_limit), Vec::<String>::new());
+    let p = problems_of(multiplex_text(25_000_000, 26_000_001, -18, ""));
+    assert!(has(&p, "the limit is 1000 kHz"), "{p:?}");
+    // The level line: -17.0 dBFS twice sums to -13.99, over -14 dBFS of crest; -17.1
+    // stays under it.
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, ""));
+    assert!(has(&p, "the levels add up"), "{p:?}");
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, "").replace("-17", "-17.1"));
+    assert!(!has(&p, "the levels add up"), "{p:?}");
+    // 5 kHz apart: the 10 kHz channels overlap.
+    let p = problems_of(multiplex_text(25_760_000, 25_765_000, -18, ""));
+    assert!(has(&p, "overlap"), "{p:?}");
+    // 0 dBFS per multiplex: the sum would clip the 8-bit DAC.
+    let p = problems_of(multiplex_text(25_760_000, 25_780_000, 0, ""));
+    assert!(has(&p, "the levels add up"), "{p:?}");
+    // A missing frequency.
+    let missing = r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+resampler = "fast"
+[[multiplex]]
+mode = "B"
+occupancy = 3
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+"#;
+    let p = problems_of(missing.to_string());
+    assert!(has(&p, "frequency_hz is required"), "{p:?}");
+    // Services at the top level and a sound-card output are rejected.
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
+    cfg.services = vec![decdrm_station::ServiceSettings::new("Top", 0x44)];
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "belong inside the multiplexes"), "{p:?}");
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
+    cfg.output.device = Some("default".into());
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "[output.hackrf]"), "{p:?}");
+    // A top-level [channel] is not used with [[multiplex]].
+    let mut cfg = parse(&multiplex_text(25_760_000, 25_780_000, -18, ""));
+    cfg.channel = decdrm_station::ChannelSettings { occupancy: 2, ..Default::default() };
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "[channel] is not used"), "{p:?}");
+    // An unknown key inside a multiplex is named by the plan (flatten turns serde's
+    // unknown-field check off, so the parser cannot).
+    let typo = multiplex_text(25_760_000, 25_780_000, -18, "").replace("occupancy = 3", "occupancyy = 3");
+    let p = parse(&typo).validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "unknown field"), "{p:?}");
+    // The plain two-multiplex file is valid.
+    assert!(problems_of(multiplex_text(25_760_000, 25_780_000, -18, "")).is_empty());
+
+    // A disabled multiplex is out of the group: 1.24 MHz away, overlapping, or "0 dBFS"
+    // is fine, and its services are not opened; the plan prints it as (off).
+    let disabled = multiplex_text(25_760_000, 27_000_000, -18, "")
+        .replace("frequency_hz = 27000000", "frequency_hz = 27000000\nenabled = false");
+    let cfg = parse(&disabled);
+    assert_eq!(cfg.all_services().count(), 1, "only the enabled multiplex's service");
+    let decdrm_station::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
+        panic!("expected a group")
+    };
+    assert_eq!(group.multiplexes.len(), 1);
+    assert_eq!(group.multiplexes[0].index, 0);
+    assert!(group.describe(&cfg).contains("(off)"), "{}", group.describe(&cfg));
+    let overlap = multiplex_text(25_760_000, 25_765_000, -18, "")
+        .replace("frequency_hz = 25765000", "frequency_hz = 25765000\nenabled = false");
+    assert!(problems_of(overlap).is_empty());
+    let loud = multiplex_text(25_760_000, 25_780_000, -16, "")
+        .replace("frequency_hz = 25780000", "frequency_hz = 25780000\nenabled = false");
+    assert!(problems_of(loud).is_empty(), "one carrier at -16 dBFS fits");
+    // Every multiplex disabled is an error.
+    let none = multiplex_text(25_760_000, 25_780_000, -18, "")
+        .replace("occupancy = 3", "occupancy = 3\nenabled = false");
+    let p = problems_of(none);
+    assert!(has(&p, "every multiplex is disabled"), "{p:?}");
+
+    // split_level: [output] level_dbfs is the whole sum, split equally, and the
+    // multiplexes' own levels (0 dBFS here) are ignored.
+    let split = multiplex_text(25_760_000, 25_780_000, 0, "")
+        .replace("format = \"iq\"", "format = \"iq\"\nlevel_dbfs = -14\nsplit_level = true");
+    let cfg = parse(&split);
+    let decdrm_station::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
+        panic!("expected a group")
+    };
+    for m in &group.multiplexes {
+        assert!((m.level_dbfs - -17.0103).abs() < 0.01, "{}", m.level_dbfs);
+    }
+    assert!(group.describe(&cfg).contains("split_level = true"));
+    // -13 dBFS over the sum would clip the peaks.
+    let p = problems_of(split.replace("level_dbfs = -14", "level_dbfs = -13"));
+    assert!(has(&p, "set [output] level_dbfs"), "{p:?}");
+    // The sum itself stays inside -60..0 dBFS.
+    let p = problems_of(split.replace("level_dbfs = -14", "level_dbfs = -70"));
+    assert!(has(&p, "outside -60..0 dBFS (with split_level"), "{p:?}");
+    // The composite must fit the stream's sample rate: a file group has no analog
+    // filter to catch it.
+    let file_group = multiplex_text(25_760_000, 25_950_000, -18, "").replace(
+        "[output.hackrf]\nsample_rate_hz = 2_000_000\nif_offset_hz = -250_000\nresampler = \"fast\"\n",
+        "sample_rate_hz = 100_000\nfile = \"out.wav\"\n",
+    );
+    let p = problems_of(file_group);
+    assert!(has(&p, "the stream's sample rate is 100 kHz"), "{p:?}");
+
+    // The levels add up in power, not per multiplex: three at -19 dBFS plus a very
+    // quiet -40 is -14.2 dBFS over the sum, under the crest line even though
+    // "each + 10*log10(4)" would say otherwise.
+    let four = multiplex_text(25_760_000, 25_780_000, -19, "")
+        + r#"
+[[multiplex]]
+frequency_hz = 25800000
+mode = "B"
+occupancy = 3
+level_dbfs = -19
+[[multiplex.service]]
+label = "C"
+id = 0x44
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 1320.0 }
+[[multiplex]]
+frequency_hz = 25820000
+mode = "B"
+occupancy = 3
+level_dbfs = -40
+[[multiplex.service]]
+label = "D"
+id = 0x45
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 1540.0 }
+"#;
+    assert!(problems_of(four).is_empty());
+
+    // A single multiplex takes level_dbfs as it is: split_level is for a group.
+    let mut cfg = parse(&base());
+    cfg.output.split_level = true;
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "split_level is for"), "{p:?}");
+}
+
+
+/// The checked-in example of a two-multiplex group validates.
+#[cfg(feature = "hackrf")]
+#[test]
+fn multiplex_example_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/station-multiplexes.toml");
+    let cfg = StationConfig::load(&path).unwrap();
+    let plan = cfg.validate_station().unwrap_or_else(|e| panic!("{e}"));
+    let decdrm_station::StationPlan::Group(group) = plan else { panic!("expected a group") };
+    assert_eq!(group.multiplexes.len(), 2);
+    assert_eq!(group.strategy, decdrm_station::GroupStrategy::SharedResampler);
+}
+
+/// Two 10 kHz multiplexes on the given frequencies, `level` dBFS each, through a
+/// HackRF with the default IF; `extra` is added to `[output.hackrf]`.
+#[cfg(feature = "hackrf")]
+fn multiplex_text(a: u64, b: u64, level: i32, extra: &str) -> String {
+    format!(
+        r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+resampler = "fast"
+{extra}
+[[multiplex]]
+frequency_hz = {a}
+mode = "B"
+occupancy = 3
+level_dbfs = {level}
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = {{ tone_hz = 440.0 }}
+
+[[multiplex]]
+frequency_hz = {b}
+mode = "B"
+occupancy = 3
+level_dbfs = {level}
+[[multiplex.service]]
+label = "B"
+id = 0x43
+[multiplex.service.audio]
+codec = "he-aac"
+input = {{ tone_hz = 880.0 }}
+"#
+    )
 }

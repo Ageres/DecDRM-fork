@@ -46,10 +46,12 @@
 
 mod decode;
 mod framing;
+mod hls;
 pub(crate) mod http;
 mod icy;
 mod ogg;
 mod playlist;
+mod ts;
 #[cfg(test)]
 mod tests;
 
@@ -685,7 +687,7 @@ impl Worker {
             self.shared.log(format!("{message}; reconnecting in {:.1} s", wait.as_secs_f64()));
             let until = Instant::now() + wait;
             while Instant::now() < until && !self.shared.stopped() {
-                std::thread::sleep((until - Instant::now()).min(Duration::from_millis(50)));
+                std::thread::sleep(until.saturating_duration_since(Instant::now()).min(Duration::from_millis(50)));
             }
         }
         self.shared.lock().done = true;
@@ -701,6 +703,7 @@ impl Worker {
             icy_metadata: true,
             connect_timeout: self.opts.connect_timeout,
             io_timeout: self.opts.io_timeout,
+            range: None,
         };
         let mut target = self.url.clone();
         for depth in 0.. {
@@ -733,6 +736,41 @@ impl Worker {
                         Ok(t) => t,
                         Err(e) => return Outcome::Failed(format!("{url}: {}", http::describe_io(&e))),
                     };
+                    if hls::is_hls(&text) {
+                        // HLS: segments of ADTS/MPEG audio, possibly in MPEG-TS, possibly
+                        // AES-128 encrypted. The reader presents them as one stream.
+                        let reader = match hls::HlsReader::new(&text, url.clone(), req.clone(), self.shared.clone()) {
+                            Ok(r) => r,
+                            Err(e) => return Outcome::Failed(format!("{url}: {e}")),
+                        };
+                        let variant = reader.variant_url().to_string();
+                        let bitrate = reader.bitrate();
+                        let complete = reader.is_a_file();
+                        {
+                            let mut inner = self.shared.lock();
+                            // A complete playlist is a file: the station paces it and
+                            // does not trim it like a live stream.
+                            inner.on_demand = complete;
+                            let s = &mut inner.status;
+                            s.stream_url = Some(variant.clone());
+                            s.bitrate = bitrate;
+                            s.state = WebStreamState::Buffering;
+                        }
+                        if complete {
+                            self.shared.log(format!("HLS: {variant} is complete: it plays once"));
+                        }
+                        let mut input = icy::StreamInput::new(reader, None);
+                        let class = match sniff_head(&mut input) {
+                            Ok(head) => decode::classify(None, "", head),
+                            Err(e) if http::is_stopped(&e) => return Outcome::Stopped,
+                            Err(e) => return Outcome::Failed(format!("{variant}: {}", http::describe_io(&e))),
+                        };
+                        return match class {
+                            decode::Class::Audio(format) => self.decode(input, decode::open(format), bitrate),
+                            decode::Class::Rejected(why) => Outcome::Failed(format!("{variant}: {why}")),
+                            decode::Class::Playlist => Outcome::Failed(format!("{variant}: the HLS segments are a playlist")),
+                        };
+                    }
                     let entry = match playlist::entries(&text) {
                         Ok(list) => list[0].clone(),
                         Err(e) => return Outcome::Failed(format!("{url}: {e}")),

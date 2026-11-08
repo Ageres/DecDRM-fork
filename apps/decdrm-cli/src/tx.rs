@@ -1,8 +1,8 @@
 //! `decdrm tx` — run the DRM transmitter described by a station configuration file.
 
 use anyhow::{Context, Result, bail};
-use decdrm_station::{Station, StationConfig, StationStatus, StopHandle};
-use std::path::PathBuf;
+use decdrm_station::{GroupStation, ServiceStatus, Station, StationConfig, StationPlan, StationStatus, StopHandle};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -34,12 +34,28 @@ pub struct TxArgs {
     snr: Option<f64>,
 }
 
+/// Apply `--output`: write to `out` instead of every configured output. A group keeps
+/// the stream's rate and resampler quality from its `[output.hackrf]` section.
+fn apply_output(cfg: &mut StationConfig, out: &Path) -> Result<()> {
+    // Relative to the current directory, not to the configuration file.
+    cfg.output.file = Some(std::path::absolute(out).with_context(|| format!("output path {}", out.display()))?);
+    cfg.output.device = None;
+    if !cfg.multiplexes.is_empty() {
+        if cfg.output.sample_rate_hz.is_none() {
+            cfg.output.sample_rate_hz = cfg.output.hackrf.as_ref().map(|h| h.sample_rate_hz);
+        }
+        if cfg.output.resampler.is_none() {
+            cfg.output.resampler = cfg.output.hackrf.as_ref().map(|h| h.resampler);
+        }
+    }
+    cfg.output.hackrf = None;
+    Ok(())
+}
+
 pub fn run(a: TxArgs) -> Result<()> {
     let mut cfg = StationConfig::load(&a.config)?;
     if let Some(out) = &a.output {
-        // Relative to the current directory, not to the configuration file.
-        cfg.output.file = Some(std::path::absolute(out).with_context(|| format!("output path {}", out.display()))?);
-        cfg.output.device = None;
+        apply_output(&mut cfg, out)?;
     }
     if a.channel_model.is_some() || a.snr.is_some() {
         let sim = cfg.simulate.get_or_insert_with(|| decdrm_station::SimulateSettings::new(1, None));
@@ -50,11 +66,12 @@ pub fn run(a: TxArgs) -> Result<()> {
             sim.snr_db = a.snr;
         }
     }
-    let plan = cfg.validate()?;
+    let plan = cfg.validate_station()?;
     print!("{}", plan.describe(&cfg));
     if a.check {
         return Ok(());
     }
+
     if let Some(d) = a.duration
         && !(d.is_finite() && d > 0.0)
     {
@@ -84,7 +101,10 @@ pub fn run(a: TxArgs) -> Result<()> {
             }
         });
     }
-    let station = Station::with_plan_and_stop(cfg, plan, stop);
+    let station = match plan {
+        StationPlan::Single(plan) => Station::with_plan_and_stop(cfg, plan, stop).map(|s| Running::Single(Box::new(s))),
+        StationPlan::Group(group) => GroupStation::with_stop(cfg, group, stop).map(|g| Running::Group(Box::new(g))),
+    };
     created.store(true, Ordering::Relaxed);
     let mut station = station?;
     if let Some(dev) = &station.status().device {
@@ -108,7 +128,7 @@ pub fn run(a: TxArgs) -> Result<()> {
         );
     }
     // The inputs' log: web stream connections, titles, reconnections.
-    let print_log = |station: &mut Station| station.take_log().iter().for_each(|line| println!("{line}"));
+    let print_log = |station: &mut Running| station.take_log().iter().for_each(|line| println!("{line}"));
     print_log(&mut station);
     let started = Instant::now();
     let mut next_status = a.status_every;
@@ -123,7 +143,7 @@ pub fn run(a: TxArgs) -> Result<()> {
         if let Err(e) = station.transmit_frame() {
             // Complete the file and hand the radio back before reporting.
             let _ = station.finish();
-            return Err(e.into());
+            return Err(e);
         }
         print_log(&mut station);
         let s = station.status();
@@ -143,17 +163,39 @@ pub fn run(a: TxArgs) -> Result<()> {
 }
 
 fn print_status(s: &StationStatus) {
+    // A group's SDC is per multiplex: print it below, with the multiplexes.
+    let sdc = if s.multiplexes.is_empty() {
+        format!("; SDC {}/{} bytes", s.sdc_bytes_used, s.sdc_capacity)
+    } else {
+        String::new()
+    };
     println!(
-        "[{:6.1}s] output {:5.1} dBFS rms, {:5.1} dBFS peak, {} clipped; SDC {}/{} bytes{}{}",
+        "[{:6.1}s] output {:5.1} dBFS rms, {:5.1} dBFS peak, {} clipped{}{}{}",
         s.seconds,
         s.output_rms_dbfs,
         s.output_peak_dbfs,
         s.clipped_samples,
-        s.sdc_bytes_used,
-        s.sdc_capacity,
+        sdc,
         s.time_sent.as_ref().map(|t| format!(", time {t}")).unwrap_or_default(),
         if s.device.is_some() { format!(", {} underruns", s.device_underruns) } else { String::new() }
     );
+    for m in &s.multiplexes {
+        println!(
+            "          multiplex {}: {:.4} MHz, {}, {} service{}, {:.1} dBFS rms, {} frames, SDC {}/{} bytes",
+            m.index + 1,
+            m.frequency_hz as f64 / 1e6,
+            m.mode,
+            m.services.len(),
+            if m.services.len() == 1 { "" } else { "s" },
+            m.output_rms_dbfs,
+            m.frames,
+            m.sdc_bytes_used,
+            m.sdc_capacity
+        );
+        for sv in &m.services {
+            println!("{}", service_line(sv, false));
+        }
+    }
     if let Some(h) = &s.hackrf {
         let mut extra = String::new();
         if h.underruns > 0 {
@@ -179,41 +221,172 @@ fn print_status(s: &StationStatus) {
             m.sender.as_ref().map(|s| format!(" ({s})")).unwrap_or_default()
         );
     }
-    for sv in &s.services {
-        let mut line = format!("          service {} {:06X} \"{}\" {:.2} kbit/s", sv.short_id, sv.service_id, sv.label, sv.bitrate / 1000.0);
-        if let Some(a) = &sv.audio
-            && s.mdi.is_some()
-        {
-            // A modulator's audio comes encoded with the MDI: no input, no levels.
-            line.push_str(&format!(": {}", a.codec));
-        } else if let Some(a) = &sv.audio {
-            line.push_str(&format!(
-                ": {}, input {:.1} dBFS{}{}{}{}",
-                a.codec,
-                a.counters.input_rms_dbfs,
-                if a.input_finished { " (ended)" } else { "" },
-                a.web_stream
-                    .as_ref()
-                    .map(|w| format!(
-                        ", web stream {} ({:.1} s buffered){}",
-                        w.state,
-                        w.buffer_s,
-                        w.title.as_ref().map(|t| format!(", \"{t}\"")).unwrap_or_default()
-                    ))
-                    .unwrap_or_default(),
-                a.counters.input_drift_ppm.map(|p| format!(", clock trim {p:+.0} ppm")).unwrap_or_default(),
-                if a.counters.frames_dropped > 0 { format!(", {} frames dropped", a.counters.frames_dropped) } else { String::new() }
-            ));
+    if s.multiplexes.is_empty() {
+        for sv in &s.services {
+            println!("{}", service_line(sv, s.mdi.is_some()));
         }
-        for app in &sv.apps {
-            line.push_str(&format!("; {} {:.2} kbit/s", app.kind, app.bitrate / 1000.0));
-            if let Some(j) = &app.journaline {
-                let source = if j.feeds.is_empty() { "page file" } else { "feeds" };
-                let updates = if j.updates > 0 { format!(", {source} loaded again {}x", j.updates) } else { String::new() };
-                let feeds = if j.feeds.is_empty() { String::new() } else { format!(" from {} feeds", j.feeds.len()) };
-                line.push_str(&format!(" ({} pages{feeds}{updates})", j.pages));
-            }
+    }
+}
+
+/// One detailed service line for [`print_status`] (a modulator's audio has no input).
+fn service_line(sv: &ServiceStatus, mdi: bool) -> String {
+    let mut line = format!("          service {} {:06X} \"{}\" {:.2} kbit/s", sv.short_id, sv.service_id, sv.label, sv.bitrate / 1000.0);
+    if let Some(a) = &sv.audio
+        && mdi
+    {
+        // A modulator's audio comes encoded with the MDI: no input, no levels.
+        line.push_str(&format!(": {}", a.codec));
+    } else if let Some(a) = &sv.audio {
+        line.push_str(&format!(
+            ": {}, input {:.1} dBFS{}{}{}{}",
+            a.codec,
+            a.counters.input_rms_dbfs,
+            if a.input_finished { " (ended)" } else { "" },
+            a.web_stream
+                .as_ref()
+                .map(|w| format!(
+                    ", web stream {} ({:.1} s buffered){}",
+                    w.state,
+                    w.buffer_s,
+                    w.title.as_ref().map(|t| format!(", \"{t}\"")).unwrap_or_default()
+                ))
+                .unwrap_or_default(),
+            a.counters.input_drift_ppm.map(|p| format!(", clock trim {p:+.0} ppm")).unwrap_or_default(),
+            if a.counters.frames_dropped > 0 { format!(", {} frames dropped", a.counters.frames_dropped) } else { String::new() }
+        ));
+    }
+    for app in &sv.apps {
+        line.push_str(&format!("; {} {:.2} kbit/s", app.kind, app.bitrate / 1000.0));
+        if let Some(j) = &app.journaline {
+            let source = if j.feeds.is_empty() { "page file" } else { "feeds" };
+            let updates = if j.updates > 0 { format!(", {source} loaded again {}x", j.updates) } else { String::new() };
+            let feeds = if j.feeds.is_empty() { String::new() } else { format!(" from {} feeds", j.feeds.len()) };
+            line.push_str(&format!(" ({} pages{feeds}{updates})", j.pages));
         }
-        println!("{line}");
+    }
+    line
+}
+
+/// A running station: one multiplex, or a group of them through one radio.
+enum Running {
+    Single(Box<Station>),
+    Group(Box<GroupStation>),
+}
+
+impl Running {
+    fn transmit_frame(&mut self) -> Result<&[f32]> {
+        Ok(match self {
+            Self::Single(station) => station.transmit_frame()?,
+            Self::Group(group) => group.transmit_frame()?,
+        })
+    }
+
+    fn status(&self) -> &StationStatus {
+        match self {
+            Self::Single(station) => station.status(),
+            Self::Group(group) => group.status(),
+        }
+    }
+
+    fn take_log(&mut self) -> Vec<String> {
+        match self {
+            Self::Single(station) => station.take_log(),
+            Self::Group(group) => group.take_log(),
+        }
+    }
+
+    fn inputs_finished(&self) -> bool {
+        match self {
+            Self::Single(station) => station.inputs_finished(),
+            Self::Group(group) => group.inputs_finished(),
+        }
+    }
+
+    fn finish(self) -> Result<StationStatus> {
+        Ok(match self {
+            Self::Single(station) => station.finish()?,
+            Self::Group(group) => group.finish()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GROUP: &str = r#"
+[output]
+format = "iq"
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+resampler = "fast"
+[[multiplex]]
+frequency_hz = 25_760_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+[[multiplex.service]]
+label = "A"
+id = 0x42
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+[[multiplex]]
+frequency_hz = 25_780_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+[[multiplex.service]]
+label = "B"
+id = 0x43
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 880.0 }
+"#;
+
+    /// `--output` turns a radio group into a composite file at the radio's rate.
+    #[test]
+    fn a_group_records_its_composite_instead_of_the_radio() {
+        let mut cfg = StationConfig::from_toml_str(GROUP).unwrap();
+        apply_output(&mut cfg, Path::new("group.wav")).unwrap();
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert!(cfg.output.device.is_none());
+        assert_eq!(cfg.output.sample_rate_hz, Some(2_000_000), "the radio's rate");
+        assert_eq!(
+            cfg.output.resampler,
+            Some(decdrm_station::ResamplerSetting::Fast),
+            "the radio's resampler quality"
+        );
+        assert!(cfg.output.file.as_deref().unwrap().to_string_lossy().ends_with("group.wav"));
+        assert!(cfg.validate_station().is_ok());
+    }
+
+    const SINGLE: &str = r#"
+[output]
+format = "iq"
+[output.hackrf]
+frequency_hz = 25_760_000
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000
+[channel]
+mode = "B"
+occupancy = 3
+[[service]]
+label = "A"
+id = 0x42
+[service.audio]
+codec = "he-aac"
+input = { tone_hz = 440.0 }
+"#;
+
+    /// `--output` replaces every configured output: a single multiplex's radio too.
+    #[test]
+    fn a_single_output_replaces_the_radio() {
+        let mut cfg = StationConfig::from_toml_str(SINGLE).unwrap();
+        apply_output(&mut cfg, Path::new("single.wav")).unwrap();
+        assert!(cfg.output.hackrf.is_none(), "the file, not the radio");
+        assert!(cfg.output.file.is_some());
+        assert!(cfg.validate_station().is_ok());
     }
 }

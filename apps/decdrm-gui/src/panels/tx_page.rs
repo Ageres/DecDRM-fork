@@ -17,7 +17,7 @@ use crate::indicators::fmt_time;
 use crate::settings::{Settings, TxOutput};
 use crate::transmitter::TxSession;
 use crate::tx_config::{self, EXAMPLE_STATION, Overrides};
-use decdrm_station::{JournalineStatus, MultiplexPlan, StationConfig, WebStreamState, WebStreamStatus};
+use decdrm_station::{JournalineStatus, ServiceStatus, StationConfig, StationPlan, WebStreamState, WebStreamStatus};
 use eframe::egui::{self, Color32, RichText, Ui};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use std::path::{Path, PathBuf};
@@ -257,13 +257,17 @@ impl TxPage {
 
     /// Check the editor text with the overrides; keeps the result for display and
     /// returns the configuration if it is valid.
-    fn check(&mut self, settings: &Settings) -> Option<(StationConfig, MultiplexPlan)> {
+    fn check(&mut self, settings: &Settings) -> Option<(StationConfig, StationPlan)> {
         let base = self.base_dir();
         let (checked, result) =
             match tx_config::check(&self.text, &base, &Self::overrides(settings)) {
                 Ok((cfg, plan)) => {
-                    // A modulator's multiplex comes with the MDI.
-                    self.bar = plan.mdi.is_none().then(|| PlanBar::of(&cfg, &plan));
+                    // A modulator's multiplex comes with the MDI; a group has no single
+                    // band to draw.
+                    self.bar = match &plan {
+                        StationPlan::Single(p) if p.mdi.is_none() => Some(PlanBar::of(&cfg, p)),
+                        _ => None,
+                    };
                     // Whether the *file* names a destination the HackRF choice leaves
                     // out (the prepared config has them cleared already).
                     self.other_outputs = StationConfig::from_toml_str(&self.text)
@@ -608,6 +612,7 @@ impl TxPage {
                     self.hackrf_scan_rx.is_some(),
                     &mut self.hackrf_scan_wanted,
                     self.other_outputs,
+                    self.text.contains("[[multiplex]]"),
                 ),
             }
             ui.separator();
@@ -1096,74 +1101,109 @@ fn services_card(ui: &mut Ui, tx: &TxSession, pal: &Palette) {
     let s = &tx.snap.status;
     let live = tx.is_running() && tx.snap.started;
     card(ui, "Services", "", |ui| {
+        let mdi = s.mdi.is_some();
+        // A group: each multiplex's services under its own header.
+        if !s.multiplexes.is_empty() {
+            if s.multiplexes.iter().all(|m| m.services.is_empty()) {
+                placeholder(ui, "The services appear when the transmitter starts.");
+                return;
+            }
+            for (k, m) in s.multiplexes.iter().enumerate() {
+                if k > 0 {
+                    ui.separator();
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "multiplex {}: {:.4} MHz, {}, {:.1} dBFS rms",
+                        m.index + 1,
+                        m.frequency_hz as f64 / 1e6,
+                        m.mode,
+                        m.output_rms_dbfs
+                    ))
+                    .weak(),
+                );
+                for (n, sv) in m.services.iter().enumerate() {
+                    if n > 0 {
+                        ui.separator();
+                    }
+                    service_entry(ui, sv, live, k, mdi, tx, pal);
+                }
+            }
+            return;
+        }
         if s.services.is_empty() {
             placeholder(ui, "The services appear when the transmitter starts.");
             return;
         }
-        for (k, sv) in s.services.iter().enumerate() {
-            if k > 0 {
+        for (n, sv) in s.services.iter().enumerate() {
+            if n > 0 {
                 ui.separator();
             }
-            ui.horizontal(|ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().selection.bg_fill)
-                    .corner_radius(egui::CornerRadius::same(3))
-                    .inner_margin(egui::Margin::symmetric(6, 1))
-                    .show(ui, |ui| ui.label(RichText::new(sv.short_id.to_string()).monospace().strong().color(Color32::WHITE)));
-                ui.label(RichText::new(&sv.label).strong()).on_hover_text(format!("service id {:06X}", sv.service_id));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{:.2} kbit/s", sv.bitrate / 1000.0)).monospace());
-                });
-            });
-            if let Some(a) = &sv.audio
-                && s.mdi.is_some()
-            {
-                // A modulator's audio comes encoded with the MDI: no input, no levels.
-                ui.label(RichText::new(format!("{} \u{b7} from the MDI", a.codec)).weak());
-            } else if let Some(a) = &sv.audio {
-                let level = live.then_some((a.counters.input_rms_dbfs, a.counters.input_peak_dbfs));
-                meter_with_text(ui, ("tx_service_meter", sv.short_id), level, (ui.available_width() - 90.0).max(120.0), MeterKind::Audio);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("{} @ {:.1} kbit/s \u{b7} {}", a.codec, f64::from(a.encoder_bitrate) / 1000.0, a.input)).weak(),
-                    )
-                    .wrap(),
-                );
-                let mut notes = Vec::new();
-                if a.input_finished {
-                    notes.push("input ended".to_string());
-                }
-                if a.counters.frames_dropped > 0 {
-                    notes.push(format!("{} frames dropped", a.counters.frames_dropped));
-                }
-                if a.counters.encoder_errors > 0 {
-                    notes.push(format!("{} encoder errors", a.counters.encoder_errors));
-                }
-                if !notes.is_empty() {
-                    ui.colored_label(pal.error, notes.join(", "));
-                }
-                if let Some(w) = &a.web_stream {
-                    web_stream_status(ui, w, sv.short_id, pal);
-                }
-                if let Some(ppm) = a.counters.input_drift_ppm {
-                    ui.label(RichText::new(format!("following the input clock: {ppm:+.0} ppm")).weak().small());
-                }
-            }
-            for app in &sv.apps {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("+ {} \u{b7} {:.2} kbit/s", app.kind, app.bitrate / 1000.0)).weak());
-                    if let Some(j) = &app.journaline {
-                        journaline_status(ui, tx, j, live);
-                    }
-                });
-                if let Some(e) = app.journaline.as_ref().and_then(|j| j.error.as_ref()) {
-                    ui.add(egui::Label::new(RichText::new(format!("{e} (the pages before stay on the air)")).color(pal.error).small()).wrap());
-                }
-            }
+            service_entry(ui, sv, live, 0, mdi, tx, pal);
         }
     });
 }
 
+/// One service's block in the Services card: its Short Id and label, the input level,
+/// codec and state, and the data applications.
+fn service_entry(ui: &mut Ui, sv: &ServiceStatus, live: bool, mux: usize, mdi: bool, tx: &TxSession, pal: &Palette) {
+    ui.horizontal(|ui| {
+        egui::Frame::new()
+            .fill(ui.visuals().selection.bg_fill)
+            .corner_radius(egui::CornerRadius::same(3))
+            .inner_margin(egui::Margin::symmetric(6, 1))
+            .show(ui, |ui| ui.label(RichText::new(sv.short_id.to_string()).monospace().strong().color(Color32::WHITE)));
+        ui.label(RichText::new(&sv.label).strong()).on_hover_text(format!("service id {:06X}", sv.service_id));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{:.2} kbit/s", sv.bitrate / 1000.0)).monospace());
+        });
+    });
+    if let Some(a) = &sv.audio
+        && mdi
+    {
+        // A modulator's audio comes encoded with the MDI: no input, no levels.
+        ui.label(RichText::new(format!("{} \u{b7} from the MDI", a.codec)).weak());
+    } else if let Some(a) = &sv.audio {
+        let level = live.then_some((a.counters.input_rms_dbfs, a.counters.input_peak_dbfs));
+        meter_with_text(ui, ("tx_service_meter", (mux, sv.short_id)), level, (ui.available_width() - 90.0).max(120.0), MeterKind::Audio);
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("{} @ {:.1} kbit/s \u{b7} {}", a.codec, f64::from(a.encoder_bitrate) / 1000.0, a.input)).weak(),
+            )
+            .wrap(),
+        );
+        let mut notes = Vec::new();
+        if a.input_finished {
+            notes.push("input ended".to_string());
+        }
+        if a.counters.frames_dropped > 0 {
+            notes.push(format!("{} frames dropped", a.counters.frames_dropped));
+        }
+        if a.counters.encoder_errors > 0 {
+            notes.push(format!("{} encoder errors", a.counters.encoder_errors));
+        }
+        if !notes.is_empty() {
+            ui.colored_label(pal.error, notes.join(", "));
+        }
+        if let Some(w) = &a.web_stream {
+            web_stream_status(ui, w, sv.short_id, pal);
+        }
+        if let Some(ppm) = a.counters.input_drift_ppm {
+            ui.label(RichText::new(format!("following the input clock: {ppm:+.0} ppm")).weak().small());
+        }
+    }
+    for app in &sv.apps {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("+ {} \u{b7} {:.2} kbit/s", app.kind, app.bitrate / 1000.0)).weak());
+            if let Some(j) = &app.journaline {
+                journaline_status(ui, tx, j, live);
+            }
+        });
+        if let Some(e) = app.journaline.as_ref().and_then(|j| j.error.as_ref()) {
+            ui.add(egui::Label::new(RichText::new(format!("{e} (the pages before stay on the air)")).color(pal.error).small()).wrap());
+        }
+    }
+}
 /// A Journaline application: its pages, the page file's or feeds' updates, and the
 /// Update button.
 fn journaline_status(ui: &mut Ui, tx: &TxSession, j: &JournalineStatus, live: bool) {
@@ -1249,6 +1289,7 @@ fn output_hackrf_picker(
     scanning: bool,
     scan_wanted: &mut bool,
     other_outputs: bool,
+    grouped: bool,
 ) {
     /// Broadcast bands to start from (kHz): a little below each band's middle, so the
     /// whole channel stays inside it (40 kHz in the narrow 75 m and 15 m, where 70
@@ -1291,11 +1332,19 @@ fn output_hackrf_picker(
             "Broadcast bands, a little below each band's middle so the whole channel stays inside the band; drag the frequency for anything else.",
         );
     // The radio's span less the IF: the channel and the local oscillator must both
-    // stay inside it (1 MHz … 6 GHz), so the field cannot leave it either.
+    // stay inside it (1 MHz : 6 GHz), so the field cannot leave it either. With
+    // [[multiplex]] the field is the first multiplex's frequency and the oscillator
+    // depends on all of them: the plan reports an out-of-range group, so no clamp.
     let if_offset_hz = settings.tx_hackrf_if_khz * 1_000.0;
-    let (min_hz, max_hz) = decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz);
+    let (min_hz, max_hz) = if grouped {
+        (1_000_000, 6_000_000_000)
+    } else {
+        decdrm_station::HackrfSettings::frequency_range_for(if_offset_hz)
+    };
     let (min_khz, max_khz) = (min_hz as f64 / 1_000.0, max_hz as f64 / 1_000.0);
-    settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
+    if !grouped {
+        settings.tx_hackrf_frequency_khz = settings.tx_hackrf_frequency_khz.clamp(min_khz, max_khz);
+    }
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_frequency_khz)
             .range(min_khz..=max_khz)
@@ -1304,13 +1353,13 @@ fn output_hackrf_picker(
             .suffix(" kHz"),
     )
     .on_hover_text(format!(
-        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; these fields win afterwards."
+        "Nominal frequency of the DRM channel on air, {min_khz:.0}–{max_khz:.0} kHz with the IF {if_offset_hz:.0} kHz. Taken from the station file's [output.hackrf] when you choose HackRF or open it; with [[multiplex]] tables it is the first multiplex's frequency. These fields win afterwards."
     ));
-    // The IF presets: -950..+950 kHz in 50 kHz steps, 0 being zero IF. A choice that
+    // The IF presets: -850..+850 kHz in 50 kHz steps, 0 being zero IF. A choice that
     // would push the local oscillator out of the radio's range at the current channel
     // frequency is offered disabled, with the frequency span it would need.
     const IF_STEP_KHZ: i32 = 50;
-    const IF_MAX_KHZ: i32 = 950;
+    const IF_MAX_KHZ: i32 = 850;
     let selected = if settings.tx_hackrf_if_khz == 0.0 {
         "IF 0 kHz".to_string()
     } else if (settings.tx_hackrf_if_khz.abs() <= f64::from(IF_MAX_KHZ))
@@ -1362,7 +1411,7 @@ fn output_hackrf_picker(
         })
         .response
         .on_hover_text(
-            "The IF the DRM channel is shifted to within the radio's passband: negative puts the local oscillator above the channel (the default -250 kHz), positive below. 0 is zero IF and puts the radio's DC spike on the channel. Presets from -950 to +950 kHz in 50 kHz steps; a value from the station file that is not on the grid is kept and shown as it is.",
+            "The IF the DRM channel is shifted to within the radio's passband: negative puts the local oscillator above the channel (the default -250 kHz), positive below. 0 is zero IF and puts the radio's DC spike on the channel. Presets from -850 to +850 kHz in 50 kHz steps; a value from the station file that is not on the grid is kept and shown as it is.",
         );
     ui.add(
         egui::DragValue::new(&mut settings.tx_hackrf_gain_db)

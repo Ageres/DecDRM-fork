@@ -430,7 +430,7 @@ pub struct Settings {
     pub tx_hackrf_frequency_khz: f64,
     /// The HackRF IF for [`TxOutput::Hackrf`], kHz: the DRM channel is shifted this
     /// far within the radio's passband (negative puts the local oscillator above the
-    /// channel). The transmit page offers -950..+950 kHz in 50 kHz steps.
+    /// channel). The transmit page offers -850..+850 kHz in 50 kHz steps.
     pub tx_hackrf_if_khz: f64,
     /// HackRF transmit VGA gain, dB (0–47).
     pub tx_hackrf_gain_db: u32,

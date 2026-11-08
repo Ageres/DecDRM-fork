@@ -47,6 +47,12 @@ pub struct StationConfig {
     /// The services, in Short Id order (`[[service]]` tables in the file).
     #[serde(rename = "service", default)]
     pub services: Vec<ServiceSettings>,
+    /// The multiplexes (`[[multiplex]]` tables): each with its own frequency, channel
+    /// and services, all sent through one stream. Empty (the usual form) means a single
+    /// multiplex built from `[channel]`, `[[service]]` and `[output.hackrf]
+    /// frequency_hz`; see `docs/design/multi-multiplex.md`.
+    #[serde(rename = "multiplex", default, skip_serializing_if = "Vec::is_empty")]
+    pub multiplexes: Vec<MultiplexSettings>,
     /// Modulator: transmit MDI from a content server instead of the services (the
     /// channel, services, time and alternative frequencies are then not used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +65,13 @@ pub struct StationConfig {
 }
 
 impl StationConfig {
+    /// Every configured service: the top-level ones, or those inside `[[multiplex]]`.
+    pub fn all_services(&self) -> impl Iterator<Item = &ServiceSettings> {
+        self.services
+            .iter()
+            .chain(self.multiplexes.iter().filter(|m| m.enabled).flat_map(|m| m.services.iter()))
+    }
+
     /// Whether the programme ends by itself: every audio service reads a non-looping
     /// file (false for data-only stations and for tone or sound-card inputs). The same
     /// rule as [`crate::Station::inputs_finite`], available before a station (and its
@@ -68,7 +81,7 @@ impl StationConfig {
             // A recording ends; UDP goes on.
             return matches!(crate::modulator::origin(m, self.base_dir.as_deref()), Ok(decdrm_mdi::source::MdiOrigin::File { .. }));
         }
-        let mut inputs = self.services.iter().filter_map(|s| s.audio.as_ref()).map(|a| &a.input).peekable();
+        let mut inputs = self.all_services().filter_map(|s| s.audio.as_ref()).map(|a| &a.input).peekable();
         inputs.peek().is_some() && inputs.all(|i| i.file.is_some() && !i.looped)
     }
 
@@ -136,6 +149,58 @@ pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
 // ---------------------------------------------------------------------------------
 // Channel
 // ---------------------------------------------------------------------------------
+
+/// One multiplex of a multi-multiplex station (`[[multiplex]]`): its frequency, its
+/// level, its own channel parameters and its own services. With no `[[multiplex]]`
+/// tables the station is a single multiplex built from `[channel]`, `[[service]]` and
+/// `[output.hackrf] frequency_hz`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MultiplexSettings {
+    /// Transmit this multiplex: `false` keeps it in the file but out of the group - its
+    /// services are not opened or encoded, it takes no room in the span, the levels or
+    /// the load, and the plan prints it as `(off)`. Default: `true`.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    /// Nominal frequency of the DRM channel on air, Hz (the DC carrier). Required when
+    /// `[[multiplex]]` is used; `[output.hackrf] frequency_hz` is then ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_hz: Option<u64>,
+    /// RMS level of this multiplex in the composite, dBFS. Default: `[output]
+    /// level_dbfs`; the plan warns when the sum of the multiplexes would clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_dbfs: Option<f64>,
+    /// The DRM channel parameters (mode, occupancy, MSC/SDC, interleaving, protection).
+    #[serde(flatten)]
+    pub channel: ChannelSettings,
+    /// The services, in Short Id order (`[[multiplex.service]]` tables in the file).
+    #[serde(rename = "service", default)]
+    pub services: Vec<ServiceSettings>,
+    /// Keys the flattened channel does not know: `flatten` turns serde's
+    /// unknown-field check off, so the plan names them instead.
+    #[serde(flatten, default, skip_serializing)]
+    pub(crate) unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl Default for MultiplexSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            frequency_hz: None,
+            level_dbfs: None,
+            channel: ChannelSettings::default(),
+            services: Vec::new(),
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
 
 /// Transmission parameters. Defaults: mode B, 10 kHz (SO 3), 64-QAM with protection
 /// level 1, 16-QAM SDC, long interleaving — Dream's defaults.
@@ -221,6 +286,18 @@ pub struct OutputSettings {
     /// Transmit through a HackRF One (see [`HackrfSettings`]); needs
     /// `format = "iq"` with `iq_offset_hz = 0` (the HackRF does its own IF shift).
     pub hackrf: Option<HackrfSettings>,
+    /// Split `level_dbfs` equally among the enabled `[[multiplex]]` tables: it is then
+    /// the whole composite's RMS level (each multiplex gets `level_dbfs - 10*log10(N)`,
+    /// and the multiplexes' own `level_dbfs` is ignored). Default: `false` (each
+    /// multiplex is set on its own).
+    pub split_level: bool,
+    /// The composite's sample rate, Hz (`[[multiplex]]` only): the rate of the one
+    /// stream that goes to the radio or the file. Default: the `[output.hackrf]` one
+    /// (both must agree when both are set); a group that only writes a file must set it.
+    pub sample_rate_hz: Option<u32>,
+    /// The quality of the composite's resamplers (`[[multiplex]]` only). Default: the
+    /// `[output.hackrf]` one, or `balanced`.
+    pub resampler: Option<ResamplerSetting>,
 }
 
 impl Default for OutputSettings {
@@ -237,6 +314,9 @@ impl Default for OutputSettings {
             level_dbfs: decdrm_core::tx::output::DEFAULT_LEVEL_DBFS,
             band_limit: true,
             hackrf: None,
+            sample_rate_hz: None,
+            resampler: None,
+            split_level: false,
         }
     }
 }
@@ -280,7 +360,8 @@ pub struct HackrfSettings {
     /// keeping the DRM channel clear of the HackRF's DC spike and LO leakage.
     /// Default -250 kHz (the oscillator above the channel); the offset plus the
     /// channel's own span (up to 14.6 kHz above the DC carrier in the 18 and 20 kHz
-    /// occupancies) must stay within half the sample rate.
+    /// occupancies) must stay within half of the analog filter's bandwidth (3/4 of
+    /// the sample rate, at least 1.75 MHz).
     pub if_offset_hz: f64,
     /// Transmit VGA gain, 0–47 dB (the final stage before the antenna).
     pub tx_gain_db: u32,
@@ -336,6 +417,13 @@ impl HackrfSettings {
         let lower = (floor as f64 + offset).max(floor as f64);
         let upper = (ceiling as f64 + offset).min(ceiling as f64);
         (lower as u64, (upper.max(lower)) as u64)
+    }
+
+    /// Bandwidth of the TX baseband filter at `rate_hz`, Hz: 3/4 of the rate, clamped
+    /// to the chip's 1.75–28 MHz range. At 2 Msps the floor applies, so the filter is
+    /// 1.75 MHz wide (the usable band is about ±875 kHz), not 1.5 MHz.
+    pub fn baseband_filter_hz(rate_hz: u32) -> u32 {
+        ((rate_hz as u64 * 3) / 4).clamp(1_750_000, 28_000_000) as u32
     }
 
     /// The local-oscillator frequency: below the nominal frequency by the IF offset

@@ -2,8 +2,8 @@
 
 A Digital Radio Mondiale (DRM30) receiver **and transmitter** written in Rust.
 
-> **This is a fork.** It adds a HackRF One transmitter output (`[output.hackrf]`) to
-> [CasualArclamp/DecDRM](https://github.com/CasualArclamp/DecDRM). Use it only if you
+> **This is a fork.** It adds a HackRF One transmitter output (`[output.hackrf]`, up to
+> four multiplexes in one stream) to [CasualArclamp/DecDRM](https://github.com/CasualArclamp/DecDRM). Use it only if you
 > need to transmit through a HackRF; otherwise use the
 > [original repository](https://github.com/CasualArclamp/DecDRM), where the project is
 > developed and kept up to date. The fork is versioned on its own line, starting

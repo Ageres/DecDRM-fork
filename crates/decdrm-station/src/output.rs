@@ -19,6 +19,12 @@ const RATE: u32 = decdrm_core::params::SAMPLE_RATE;
 
 /// Create the output file of `cfg`, if any.
 pub(crate) fn open_file(cfg: &StationConfig, channels: usize) -> Result<Option<FileWriter>> {
+    open_file_at(cfg, RATE, channels)
+}
+
+/// Create the output file of `cfg` at `rate` (a group writes its composite there), if
+/// any.
+pub(crate) fn open_file_at(cfg: &StationConfig, rate: u32, channels: usize) -> Result<Option<FileWriter>> {
     let Some(f) = &cfg.output.file else { return Ok(None) };
     let path = cfg.resolve(f);
     let container = Container::from_path(&path)
@@ -28,7 +34,7 @@ pub(crate) fn open_file(cfg: &StationConfig, channels: usize) -> Result<Option<F
         SampleFormat::Int24 => Encoding::Int24,
         SampleFormat::Float32 => Encoding::Float32,
     };
-    FileWriter::create(&path, AudioFormat::new(RATE, channels), container, encoding).map(Some).map_err(StationError::Output)
+    FileWriter::create(&path, AudioFormat::new(rate, channels), container, encoding).map(Some).map_err(StationError::Output)
 }
 
 /// Playback starts once this much signal is queued on the sound card.

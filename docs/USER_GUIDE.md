@@ -267,7 +267,7 @@ download the file in a browser and save it there under the name shown. A file fo
 earlier season stays in use, with a warning, until you update. More sources go into
 `sources.toml` in that folder:
 
-```toml
+````toml
 [[source]]
 name = "mylist"                                # decdrm schedule --source mylist
 title = "My DRM list"
@@ -616,7 +616,7 @@ With an `[mdi]` section the station transmits the multiplex a content server sen
 (MDI, ETSI TS 102 820), instead of its own services. Content servers include Dream
 `--mdiout`, commercial ones, or a recording:
 
-```toml
+````toml
 [mdi]
 input = "8000"            # a UDP port, group:port, interface:group:port, or a recording
 # buffer_frames = 3       # with a sound card: frames held against network jitter
@@ -679,7 +679,7 @@ complex baseband is resampled to the HackRF's sample rate and shifted to an inte
 frequency inside its passband, so the DRM channel keeps clear of the radio's DC spike
 and LO leakage; the local oscillator runs at the nominal frequency minus that IF.
 
-```toml
+````toml
 [output]
 format = "iq"        # required, with iq_offset_hz = 0: the HackRF does its own IF shift
 
@@ -728,7 +728,7 @@ the station survives the SSH session, and one that exits with an error is restar
 `start --log` appends to `station/logs/decdrm-<name>.log`. The
 [build guide](BUILD.md#raspberry-pi-4-64-bit) has the details.
 
-The GUI's HackRF mode offers **IF presets** from −950 to +950 kHz in 50 kHz steps:
+The GUI's HackRF mode offers **IF presets** from −850 to +850 kHz in 50 kHz steps:
 negative puts the local oscillator above the channel (the default −250 kHz), positive
 below; 0 is zero IF and puts the radio's DC spike on the channel. A preset that would
 push the local oscillator out of the radio's range at the current channel frequency is
@@ -767,12 +767,95 @@ which takes the signal off the air the same way it does a real broadcaster's.
 > **Keep to your licence and to lab conditions.** Even at the HackRF's milliwatt level,
 > an antenna turns it into a transmitter that needs one.
 
+### Several multiplexes through one HackRF
+
+One radio can send several DRM multiplexes at once, each on its own frequency, when
+they fit the radio's passband. Add a `[[multiplex]]` table per frequency instead of
+the top-level `[channel]` and `[[service]]`:
+
+````toml
+[output]
+format = "iq"
+level_dbfs = -18           # the default for the multiplexes below
+
+[output.hackrf]
+sample_rate_hz = 2_000_000
+if_offset_hz = -250_000    # the whole group's IF (see below)
+tx_gain_db = 40
+resampler = "fast"
+
+[[multiplex]]
+frequency_hz = 25_760_000
+mode = "B"
+occupancy = 3              # 10 kHz
+level_dbfs = -18
+
+[[multiplex.service]]
+label = "PROGRAMME A"
+id = 0x42
+
+[multiplex.service.audio]
+codec = "xhe-aac"
+input = { tone_hz = 440.0 }
+
+[[multiplex]]
+frequency_hz = 25_780_000
+mode = "B"
+occupancy = 3
+level_dbfs = -18
+# ... its own services, as [[multiplex.service]]
+```
+
+`decdrm tx station.toml --check` prints the group and every multiplex before anything
+is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limits:
+
+- **up to four multiplexes**, at most **1 MHz between the outermost carriers**;
+- every multiplex at least 15 kHz away from the local oscillator (its DC spike) and
+  inside the radio's analog filter (about +-875 kHz at 2 Msps);
+- no overlap, and the levels must leave room for the sum: the OFDM peaks are about
+  14 dB above the RMS, so two carriers at -18 dBFS each stay below full scale (the
+  plan says when a level is too high). Or set one `[output] level_dbfs = -15` with
+  `split_level = true`: it is the whole sum, split equally (four carriers: -21.0 dBFS
+  each), and the levels inside the multiplexes are ignored; -14 is the loudest sum
+  the peaks allow;
+- **9 and 10 kHz occupancies** on a Raspberry Pi: 18 and 20 kHz need
+  `resampler = "balanced"`, which the Pi cannot keep up with (see the build guide).
+
+A `[[multiplex]]` can be switched off without deleting it: `enabled = false` keeps its
+settings and services in the file but out of the stream - no feed is opened, no encoder
+runs, and it takes no room in the span, the levels or the load. `--check` prints it as
+`(off)`, and the other multiplexes keep their numbers. Its own settings are not checked
+while it is off (a broken codec or feed names itself when it is enabled again).
+
+Each multiplex's 48 kHz baseband is combined with the others: one shared resampler
+brings a group of up to about 180 kHz of carrier separation (the intermediate rate is
+48, 96 or 192 kHz) to the radio's rate; a wider group (up to 1 MHz) resamples each
+multiplex first. The group's own IF (where its centre
+sits relative to the local oscillator) is applied to the whole stream.
+
+To record the composite instead of transmitting it, give `[output] file` (I/Q) and no
+`[output.hackrf]`, with the stream's rate and the resampler quality in `[output]`:
+
+```toml
+[output]
+format = "iq"
+file = "group.wav"
+sample_rate_hz = 2_000_000  # the composite's rate, not the radio's
+resampler = "fast"          # the composite's resamplers
+```
+`decdrm tx station.toml --output other.wav` writes to that file instead of every
+configured output (the radio is not opened): a group records the composite at the
+radio's rate and with its resampler, a single multiplex its 48 kHz baseband. Use the
+file's own `[output] file` when the signal has to go to the radio and a file at once.
+
+The GUI transmits a group too: the quick frequency field edits the first multiplex, and the Services card lists them all. `scripts/pi/stationctl`
+keeps it running on a Pi. The load for one to four carriers is in the build guide.
 ### Relaying an internet radio stream
 
 `[service.audio.input] url = "…"` takes the programme from an internet radio stream.
 Rebroadcasting someone else's programme needs their permission.
 
-```toml
+````toml
 [service.audio]
 codec = "he-aac"
 text = ["Relayed by DecDRM"]       # optional; the stream's titles go first
@@ -784,8 +867,13 @@ url = "https://radio.example/live.mp3"
 
 - **Streams:** Icecast and SHOUTCAST over HTTP or HTTPS (checked against the system's
   trusted certificates), following redirects. A playlist (`.m3u`, `.m3u8`, `.pls`)
-  stands for its first stream. HLS (segmented `.m3u8`), DASH, MP4 and WMA streams are
-  not supported.
+  stands for its first stream. An HLS playlist (`.m3u8` with `#EXT-X-` tags, which
+  radio stations increasingly serve; a master playlist and its media playlist are
+  followed) is played segment by segment from the live edge: AAC in ADTS or in
+  MPEG-TS, MP3, and AES-128 encrypted segments. A playlist that stops advancing is
+  reported as a stall; one that ends (`#EXT-X-ENDLIST`) is played once and starts
+  over. HLS with fragmented-MP4 segments (`#EXT-X-MAP`), `SAMPLE-AES` encryption,
+  DASH, MP4 and WMA streams are not supported (the station reports it).
 - **Codecs:** MP3 (and MP2), AAC, HE-AAC and HE-AAC v2 in ADTS, Ogg Vorbis, Ogg Opus
   (mono or stereo), FLAC (native or in Ogg). The format is recognised from the data,
   from the server's `Content-Type` only when the data does not tell. The audio is mixed
@@ -794,7 +882,8 @@ url = "https://radio.example/live.mp3"
   ICY `StreamTitle`, or an Ogg stream's comments — goes out as a text message, first in
   the cycle, followed by the `text` messages. A new title replaces the old one at once
   (receivers see a new message), and it changes when its audio goes out, not when it
-  arrives.
+  arrives. An HLS stream carries no title for the station (its `#EXT-X-DATERANGE`
+  artist/title metadata is not read): only the `text` messages go out.
 - **Timing:** the stream runs on the broadcaster's clock.
   - With a sound-card output the station keeps 1.5 s of the stream in hand and follows
     its clock like a sound-card input (*clock trim* in the CLI's status lines). It
@@ -821,7 +910,7 @@ A Journaline application can take its pages from RSS or Atom feeds instead of a 
 file. The station fetches them when it starts, then again on a schedule, and changes go
 on the air at once. Rebroadcasting someone else's news needs their permission.
 
-```toml
+````toml
 [[service]]
 label = "News"
 id = 0xD0D002

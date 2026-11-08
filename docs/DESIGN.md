@@ -742,7 +742,8 @@ symbol lengths are 1152/1024/704/448 samples for modes A/B/C/D.
       *Done:* `decdrm_station::webstream`. HTTP/1.1 client of our own (SHOUTCAST's
       `ICY 200 OK`, chunked coding, redirects, reads that poll a stop flag and give up
       after a stall; rustls with the ring provider and the system's roots); M3U/M3U8/PLS
-      resolve to their first entry (relative entries, dot segments), HLS refused. ICY
+      resolve to their first entry (relative entries, dot segments); HLS has its own
+      module since 2026-11-08 (below). ICY
       metadata stripped, `StreamTitle` parsed (apostrophes, Latin-1). Format by sniffing
       (two agreeing frame headers), then `Content-Type`: MP3/MP2 (own framer, symphonia
       decoder), AAC/HE-AAC/HE-AAC v2 in ADTS (`decdrm_codecs::FdkAdtsDecoder`; PS known
@@ -770,6 +771,40 @@ symbol lengths are 1152/1024/704/448 samples for modes A/B/C/D.
       loopback through the receiver; live through the virtual cable: 80 s, 0 underruns,
       titles received. Not verified: real Icecast/SHOUTCAST servers and real encoders'
       streams (no internet in development).
+- [x] **HLS input** (2026-11-08) - the web stream input plays HTTP Live Streaming
+      playlists (segmented `.m3u8` with `#EXT-X-` tags), so stations that no longer
+      offer a continuous Icecast stream work. *Done:* `webstream::hls` (RFC 8216): the
+      master playlist (`#EXT-X-STREAM-INF`, `#EXT-X-MEDIA` audio renditions) and the
+      media playlist (`#EXTINF`, `#EXT-X-TARGETDURATION`, `#EXT-X-MEDIA-SEQUENCE`,
+      `#EXT-X-DISCONTINUITY`, `#EXT-X-GAP`, `#EXT-X-ENDLIST`, `#EXT-X-BYTERANGE`,
+      `#EXT-X-KEY`; the `PROGRAM-DATE-TIME`, `DATERANGE` and `START` tags are ignored);
+      `#EXT-X-MAP` (fMP4) and `SAMPLE-AES` are refused by name, low-latency HLS is not
+      recognised (its `EXTINF` segments play, at the usual latency). The variant chosen
+      is an audio rendition (the `DEFAULT` one), else an audio-only variant with the best
+      bit rate (its quality goes on the air), else the least wasteful variant with video;
+      a muxed variant's `BANDWIDTH` is not shown as the audio bit rate. A `Read` joins
+      segments from the live edge (a segment back), polls the playlist every target/2 s,
+      skips whole segments it missed with a log line, and re-resolves the variant through
+      the entry URL when a session URL expires (403/404), starting at the new session's
+      live edge (its media sequence is unrelated) and watching for a sequence that goes
+      back. A playlist that does not advance for max(30 s, 5 targets) is a stall, not a
+      silence. A segment that a refresh shows to be gone is skipped; other failures are
+      retried three times. A byte range is only accepted from a server that answers 206
+      (or 200 with exactly the asked length). AES-128-CBC segments are decrypted (`aes`,
+      PKCS#7, the IV from `IV=` or the media sequence) and a `MAX_KEYS` cache of keys is
+      kept; the ID3v2 tag some servers put before a segment's audio is dropped.
+      `webstream::ts` demultiplexes MPEG-TS segments (PAT/PMT/PES, ADTS AAC and MPEG
+      audio; LATM, AC-3 and E-AC-3 refused by name) - the rest pass through to the
+      existing sniffer. A complete playlist (`EXT-X-ENDLIST`) is a file: `on_demand`, no
+      trim, and it starts over after its end. `http::Request.range` adds `Range:` for
+      byte-range segments; `icy::StreamInput` takes any `Box<dyn Read>`. Tests: the
+      parsers and the variant choice, the TS demuxer on synthetic packets (a real PMT
+      layout, a program descriptor, video before audio), the AES-CBC NIST vector, and end
+      to end through the local test server (a master, a media playlist whose window moves
+      with each request, ADTS segments joined into one tone, a session change to a lower
+      media sequence, a server that ignores `Range:`). Live: Radio Business Class (RBC)
+      masters, AAC-LC 44.1 kHz stereo 113 kbit/s, decoded for 4 s; not verified: other
+      broadcasters, encrypted segments in the wild, fMP4, the load on the Pi.
 
 ## Conventions
 

@@ -8,12 +8,12 @@
 //! change). The other `icy-*` headers name the station (`icy-name`), its genre and
 //! bit rate (`icy-br`).
 
-use super::http::{Body, text};
+use super::http::text;
 use std::io::{self, Read};
 
 /// A stream body without its ICY metadata.
 pub(crate) struct StreamInput {
-    body: Body,
+    body: Box<dyn Read>,
     /// Audio bytes between metadata blocks (`icy-metaint`).
     metaint: Option<usize>,
     /// Audio bytes until the next metadata block.
@@ -29,10 +29,10 @@ pub(crate) struct StreamInput {
 }
 
 impl StreamInput {
-    pub fn new(body: Body, metaint: Option<usize>) -> Self {
+    pub fn new(body: impl Read + 'static, metaint: Option<usize>) -> Self {
         let metaint = metaint.filter(|&n| n > 0);
         StreamInput {
-            body,
+            body: Box::new(body),
             metaint,
             until_meta: metaint.unwrap_or(0),
             replay: Vec::new(),
