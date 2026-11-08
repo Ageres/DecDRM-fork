@@ -923,15 +923,15 @@ fn multiplex_group_checks() {
     // The level line: -17.0 dBFS twice sums to -13.99, over -14 dBFS of crest; -17.1
     // stays under it.
     let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, ""));
-    assert!(has(&p, "set level_dbfs"), "{p:?}");
+    assert!(has(&p, "the levels add up"), "{p:?}");
     let p = problems_of(multiplex_text(25_760_000, 25_780_000, -17, "").replace("-17", "-17.1"));
-    assert!(!has(&p, "set level_dbfs"), "{p:?}");
+    assert!(!has(&p, "the levels add up"), "{p:?}");
     // 5 kHz apart: the 10 kHz channels overlap.
     let p = problems_of(multiplex_text(25_760_000, 25_765_000, -18, ""));
     assert!(has(&p, "overlap"), "{p:?}");
     // 0 dBFS per multiplex: the sum would clip the 8-bit DAC.
     let p = problems_of(multiplex_text(25_760_000, 25_780_000, 0, ""));
-    assert!(has(&p, "set level_dbfs"), "{p:?}");
+    assert!(has(&p, "the levels add up"), "{p:?}");
     // A missing frequency.
     let missing = r#"
 [output]
@@ -996,6 +996,58 @@ input = { tone_hz = 440.0 }
         .replace("occupancy = 3", "occupancy = 3\nenabled = false");
     let p = problems_of(none);
     assert!(has(&p, "every multiplex is disabled"), "{p:?}");
+
+    // split_level: [output] level_dbfs is the whole sum, split equally, and the
+    // multiplexes' own levels (0 dBFS here) are ignored.
+    let split = multiplex_text(25_760_000, 25_780_000, 0, "")
+        .replace("format = \"iq\"", "format = \"iq\"\nlevel_dbfs = -14\nsplit_level = true");
+    let cfg = parse(&split);
+    let decdrm_station::StationPlan::Group(group) = cfg.validate_station().unwrap() else {
+        panic!("expected a group")
+    };
+    for m in &group.multiplexes {
+        assert!((m.level_dbfs - -17.0103).abs() < 0.01, "{}", m.level_dbfs);
+    }
+    assert!(group.describe(&cfg).contains("split_level = true"));
+    // -13 dBFS over the sum would clip the peaks.
+    let p = problems_of(split.replace("level_dbfs = -14", "level_dbfs = -13"));
+    assert!(has(&p, "set [output] level_dbfs"), "{p:?}");
+
+    // The levels add up in power, not per multiplex: three at -19 dBFS plus a very
+    // quiet -40 is -14.2 dBFS over the sum, under the crest line even though
+    // "each + 10*log10(4)" would say otherwise.
+    let four = multiplex_text(25_760_000, 25_780_000, -19, "")
+        + r#"
+[[multiplex]]
+frequency_hz = 25800000
+mode = "B"
+occupancy = 3
+level_dbfs = -19
+[[multiplex.service]]
+label = "C"
+id = 0x44
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 1320.0 }
+[[multiplex]]
+frequency_hz = 25820000
+mode = "B"
+occupancy = 3
+level_dbfs = -40
+[[multiplex.service]]
+label = "D"
+id = 0x45
+[multiplex.service.audio]
+codec = "he-aac"
+input = { tone_hz = 1540.0 }
+"#;
+    assert!(problems_of(four).is_empty());
+
+    // A single multiplex takes level_dbfs as it is: split_level is for a group.
+    let mut cfg = parse(&base());
+    cfg.output.split_level = true;
+    let p = cfg.validate_station().unwrap_err().problems().to_vec();
+    assert!(has(&p, "split_level is for"), "{p:?}");
 }
 
 

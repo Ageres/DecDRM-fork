@@ -164,9 +164,11 @@ It must check, per multiplex and for the group:
 - mode/occupancy of each multiplex (as today, per channel);
 - the worst case of the resampler: `fast` stays transparent only for the
   4.5-10 kHz occupancies (the existing warning, now per multiplex);
-- clipping: the sum of N multiplexes against the 8-bit DAC, with `level_dbfs` per
-  multiplex; the OFDM crest factor is about 14 dB (measured), so the plan asks for
-  the RMS of the sum to stay that far below full scale and suggests a level.
+- clipping: the powers of the N multiplexes add up against the 8-bit DAC, and the
+  OFDM crest factor is about 14 dB (measured), so the plan asks for the sum's RMS to
+  stay that far below full scale and suggests a level. With `[output] split_level =
+  true`, `[output] level_dbfs` is the sum instead: each enabled multiplex gets
+  `level_dbfs - 10*log10(N)` and its own `level_dbfs` is ignored.
 
 ## Status
 
@@ -256,7 +258,9 @@ before and after.
 - **Spacing limit**: the outermost carriers at most 1 MHz apart; the plan rejects more.
   At 2 Msps that is 1 MHz of the 1.75 MHz analog filter, so a wide group has to sit on
   the LO with a gap in the middle rather than at the default -250 kHz IF.
-- **Level**: `level_dbfs` per multiplex; the plan warns when the sum clips.
+- **Level**: `level_dbfs` per multiplex, or one `[output] level_dbfs` with
+  `split_level = true` split equally among them; the plan warns when the power sum
+  clips.
 - **Thermal**: four carriers at a 1 MHz span load about 2.4 cores; the experiment
   decides whether a Pi 4 holds it (a fan, `get_throttled`). The fallback is the
   narrow group or two carriers.

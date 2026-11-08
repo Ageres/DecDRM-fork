@@ -286,6 +286,11 @@ pub struct OutputSettings {
     /// Transmit through a HackRF One (see [`HackrfSettings`]); needs
     /// `format = "iq"` with `iq_offset_hz = 0` (the HackRF does its own IF shift).
     pub hackrf: Option<HackrfSettings>,
+    /// Split `level_dbfs` equally among the enabled `[[multiplex]]` tables: it is then
+    /// the whole composite's RMS level (each multiplex gets `level_dbfs - 10*log10(N)`,
+    /// and the multiplexes' own `level_dbfs` is ignored). Default: `false` (each
+    /// multiplex is set on its own).
+    pub split_level: bool,
     /// The composite's sample rate, Hz (`[[multiplex]]` only): the rate of the one
     /// stream that goes to the radio or the file. Default: the `[output.hackrf]` one
     /// (both must agree when both are set); a group that only writes a file must set it.
@@ -311,6 +316,7 @@ impl Default for OutputSettings {
             hackrf: None,
             sample_rate_hz: None,
             resampler: None,
+            split_level: false,
         }
     }
 }

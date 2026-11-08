@@ -1,8 +1,8 @@
 # Two DRM30 multiplexes in one HackRF One stream (see docs/design/multi-multiplex.md).
 #
 # This is the checked-in form of the design: the station plans and checks the group
-# (decdrm tx station-multiplexes.toml --check); sending several multiplexes in one
-# stream is not implemented yet.
+# (decdrm tx station-multiplexes.toml --check); the station sends the group through one
+# HackRF, or writes it to a file instead ([output] file + sample_rate_hz).
 #
 # The channels are 20 kHz apart, both mode B at 10 kHz, so the composite is about
 # 30 kHz wide. The group is placed 250 kHz below the local oscillator (the same IF
@@ -11,7 +11,9 @@
 
 [output]
 format = "iq"          # complex baseband; the HackRF does its own IF shift
-level_dbfs = -18
+level_dbfs = -18        # each multiplex's RMS; with split_level = true it is their sum
+# split_level = true    # then each multiplex gets level_dbfs - 10*log10(N) (its own
+                        # level_dbfs is ignored)
 
 [output.hackrf]
 # frequency_hz is not used with [[multiplex]]: each multiplex names its own.

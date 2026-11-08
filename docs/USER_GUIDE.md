@@ -814,7 +814,10 @@ is sent; see `crates/decdrm-station/examples/station-multiplexes.toml`. The limi
   inside the radio's analog filter (about +-875 kHz at 2 Msps);
 - no overlap, and the levels must leave room for the sum: the OFDM peaks are about
   14 dB above the RMS, so two carriers at -18 dBFS each stay below full scale (the
-  plan says when a level is too high);
+  plan says when a level is too high). Or set one `[output] level_dbfs = -15` with
+  `split_level = true`: it is the whole sum, split equally (four carriers: -21.0 dBFS
+  each), and the levels inside the multiplexes are ignored; -14 is the loudest sum
+  the peaks allow;
 - **9 and 10 kHz occupancies** on a Raspberry Pi: 18 and 20 kHz need
   `resampler = "balanced"`, which the Pi cannot keep up with (see the build guide).
 

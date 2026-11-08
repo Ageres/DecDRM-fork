@@ -504,6 +504,14 @@ impl GroupPlan {
                 let _ = writeln!(s, "    {line}");
             }
         }
+        if cfg.output.split_level {
+            let each = cfg.output.level_dbfs - 10.0 * (self.multiplexes.len() as f64).log10();
+            let _ = writeln!(
+                s,
+                "  levels: {:.1} dBFS over the sum, each {:.2} dBFS (split_level = true)",
+                cfg.output.level_dbfs, each
+            );
+        }
         for (i, m) in cfg.multiplexes.iter().enumerate() {
             if m.enabled {
                 continue;
@@ -1005,7 +1013,12 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     let enabled = numbered.len();
     for (i, m, frequency_hz) in numbered {
         let offset_hz = frequency_hz as f64 - lo_hz;
-        let level_dbfs = m.level_dbfs.unwrap_or(cfg.output.level_dbfs);
+        let level_dbfs = if cfg.output.split_level {
+            // The whole composite's level, split equally: the powers add up to it.
+            cfg.output.level_dbfs - 10.0 * (enabled as f64).log10()
+        } else {
+            m.level_dbfs.unwrap_or(cfg.output.level_dbfs)
+        };
         let mut sub = cfg.clone();
         sub.multiplexes.clear();
         sub.channel = m.channel.clone();
@@ -1014,6 +1027,7 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
         // The stream's settings are the group's, not a multiplex's.
         sub.output.sample_rate_hz = None;
         sub.output.resampler = None;
+        sub.output.split_level = false;
         if let Some(hs) = sub.output.hackrf.as_mut() {
             hs.frequency_hz = frequency_hz;
             hs.if_offset_hz = offset_hz;
@@ -1088,18 +1102,24 @@ fn build_group(cfg: &StationConfig) -> Result<GroupPlan> {
     // (measured on the HackRF path), so the RMS of the sum has to stay that far below
     // full scale for the peaks to fit.
     const CREST_DB: f64 = 14.0;
-    let sum_db = 10.0 * (multiplexes.len() as f64).log10();
-    for m in &multiplexes {
-        if m.level_dbfs + sum_db > -CREST_DB {
-            p.push(format!(
-                "multiplexes: {:.4} MHz at {:.1} dBFS plus the others reaches {:.1} dBFS; the OFDM peaks reach about {:.0} dB higher and clip the 8-bit DAC - set level_dbfs to about {:.1}",
-                m.frequency_hz as f64 / 1e6,
-                m.level_dbfs,
-                m.level_dbfs + sum_db,
-                CREST_DB,
-                -CREST_DB - sum_db
-            ));
-        }
+    // The powers add up: the multiplexes are on different frequencies.
+    let sum_dbfs = if cfg.output.split_level {
+        cfg.output.level_dbfs
+    } else {
+        10.0 * multiplexes.iter().map(|m| 10f64.powf(m.level_dbfs / 10.0)).sum::<f64>().log10()
+    };
+    if sum_dbfs > -CREST_DB {
+        let hint = if cfg.output.split_level {
+            format!("set [output] level_dbfs to about {:.1}", -CREST_DB)
+        } else {
+            format!(
+                "set the levels to about {:.1} dBFS each",
+                -CREST_DB - 10.0 * (multiplexes.len() as f64).log10()
+            )
+        };
+        p.push(format!(
+            "multiplexes: the levels add up to {sum_dbfs:.1} dBFS RMS; the OFDM peaks reach about {CREST_DB:.0} dB higher and clip the 8-bit DAC - {hint}"
+        ));
     }
 
     p.finish()?;
@@ -1125,6 +1145,9 @@ fn build(cfg: &StationConfig) -> Result<MultiplexPlan> {
     }
     if cfg.output.resampler.is_some() {
         p.push("output: resampler is for [[multiplex]] (a single multiplex takes [output.hackrf]'s resampler)");
+    }
+    if cfg.output.split_level {
+        p.push("output: split_level is for [[multiplex]] (a single multiplex takes level_dbfs as it is)");
     }
     let ch = &cfg.channel;
 
