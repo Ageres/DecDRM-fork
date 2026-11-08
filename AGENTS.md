@@ -32,7 +32,8 @@ local and untracked: grep it for clause numbers and tables.
 ## Git
 
 - `origin` is `https://github.com/Ageres/DecDRM-fork.git`; work goes on `dev-03`
-  (the fork's own version line, see `FORK.md`: 1.0.0, tag `v1.0.0` on `dev-02`).
+  (the fork's own version line, see `FORK.md`: 1.1.0; the last tag `v1.0.0` is on
+  `dev-02`).
 - **Never commit without an explicit "yes" from the user.** Show the proposed message
   first and wait; the user pushes. No amend, no force-push, no history rewriting.
 - Author: `Ageres <Ageres@users.noreply.github.com>`.

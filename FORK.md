@@ -53,12 +53,14 @@ Compared with the base (`git diff f387499..HEAD`):
 ## Versions
 
 The fork numbers its releases **on its own line**, starting at **1.0.0**. It does not
-reuse upstream numbers, so a fork build says `decdrm 1.0.0` and cannot be taken for an
-upstream one. Each fork release records the upstream release it is based on:
+reuse upstream numbers, so a fork build says its own version (`decdrm 1.x.y`) and cannot
+be taken for an upstream one. Each fork release records the upstream release it is
+based on:
 
 | Fork | Upstream base | What it adds |
 |---|---|---|
 | 1.0.0 | `v0.7.0` (`f387499`) | the HackRF One output with the resampler setting and the write recovery, the station and GUI integration, `stationctl`, the Pi 4 guide |
+| 1.1.0 | `v0.7.0` (`f387499`) | the multi-multiplex groups (up to four carriers through one HackRF, `split_level`, a composite to a file) and the HLS web stream input (playlists, AES-128, MPEG-TS segments), with the measured Pi 4 load |
 
 The rules:
 
