@@ -277,9 +277,9 @@ repository, the build, the kernel module and udev, the radio, the station.
    file that has one, two and four `[[multiplex]]` tables measures it, as above.
    `--output FILE` records the composite to a WAV/FLAC instead of the radio (the
    stream's rate then comes from `[output.hackrf]` or `[output] sample_rate_hz`),
-   which also measures the load without a radio. `scripts/pi/measure-group.sh` runs
-   the whole set (1-4 carriers, both strategies) and prints a table to paste into
-   the design note.
+   which also measures the load without a radio. A `step0`-style measurement of the
+   whole set (1-4 carriers, both strategies) is in the local `station/pi-step0`
+   folder (`measure-group.sh`): it prints a table for the design note.
 
 9. **systemd.** A unit for a station, with the udev rule's group and the log in
    the journal (running as root is unnecessary). Change the user and the paths to
