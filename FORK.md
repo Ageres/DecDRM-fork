@@ -64,9 +64,11 @@ The rules:
 
 - The version lives in one place, `[workspace.package] version` in the root
   `Cargo.toml`; the crates and the applications inherit it, and `Cargo.lock` follows.
-- Bump the **minor** version when an upstream release is merged (1.1.0 for upstream
-  0.8.0), the **patch** version for fixes in the fork's own code. The fork's major
-  version does not follow upstream's.
+- Bump the **minor** version for a release with new functionality - the fork's own
+  (1.1.0: several multiplexes through one HackRF and the HLS input) or an upstream
+  release merged into it (that merge takes the next minor as well, e.g. 1.2.0 after
+  1.1.0). Bump the **patch** version for a release with only fixes in the fork's own
+  code. The fork's major version does not follow upstream's.
 - A release is a "Version X.Y.Z" commit with an annotated tag `vX.Y.Z` on it. The
   release workflow (`.github/workflows/release.yml`) builds the portable Windows
   executables from the tag and refuses to publish when `decdrm --version` does not
