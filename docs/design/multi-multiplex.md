@@ -216,6 +216,10 @@ services about 5 %, and a per-multiplex stage at `Fi` about 55 % x `Fi` / 2 Msps
 These are predictions; after the implementation, run a `step0`-style measurement with
 1, 2 and 4 multiplexes (9/10 kHz: a narrow group, 140 kHz and the 1 MHz span) on a Pi 4
 with a fan, record the CPU and `get_throttled`, and put the measured numbers here.
+`scripts/pi/measure-group.sh` does exactly that: it generates six cases (1, 2, 3 and 4
+carriers up to the 180 kHz limit, and 300 kHz and 900 kHz spans), writes each composite
+to a WAV (no radio, no network), and prints a SUMMARY table with the CPU of one core,
+the real-time factor, the plan's strategy line and `get_throttled` before and after.
 
 ## Work breakdown
 
